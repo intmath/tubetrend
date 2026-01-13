@@ -149,13 +149,7 @@ const HTML_CONTENT = `
     <style>
         body { font-family: 'Pretendard Variable', sans-serif; background-color: #f8fafc; color: #0f172a; }
         .tab-active { background: #dc2626 !important; color: white !important; border-color: #dc2626 !important; }
-        /* 카테고리 여러 줄 표시를 위한 스타일 수정 */
-        .category-container { 
-            display: flex; 
-            flex-wrap: wrap; /* 줄바꿈 허용 */
-            gap: 0.5rem; 
-            padding: 1rem 0; 
-        }
+        .category-container { display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 1rem 0; }
         .live-dot { animation: pulse 1.5s infinite; }
         @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
     </style>
@@ -209,7 +203,7 @@ const HTML_CONTENT = `
         </div>
 
         <div id="section-live" class="hidden">
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8" id="live-grid"></div>
+            <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-5" id="live-grid"></div>
         </div>
     </main>
 
@@ -298,20 +292,23 @@ const HTML_CONTENT = `
             const res = await fetch(\`/api/live-ranking?region=\${region}\`);
             const data = await res.json();
             const grid = document.getElementById('live-grid');
-            if (data.length === 0) { grid.innerHTML = '<p class="col-span-3 text-center p-20 font-bold text-slate-300">No Live Streams found. Click Sync.</p>'; return; }
+            if (data.length === 0) { grid.innerHTML = '<p class="col-span-full text-center p-20 font-bold text-slate-300">No Live Streams found. Click Sync.</p>'; return; }
+            
             grid.innerHTML = data.map(d => \`
-                <div class="bg-white rounded-[2.5rem] p-5 shadow-lg border hover:shadow-2xl transition-all cursor-pointer group" onclick="window.open('https://youtube.com/watch?v=\${d.video_id}')">
-                    <div class="relative mb-5 overflow-hidden rounded-[2rem]">
-                        <img src="\${d.thumbnail}" class="w-full h-48 object-cover group-hover:scale-105 transition-transform duration-500">
-                        <div class="absolute top-4 left-4 bg-red-600 text-white px-3 py-1 rounded-lg text-[10px] font-black flex items-center gap-1.5 shadow-lg shadow-red-200">
-                            <span class="w-2 h-2 bg-white rounded-full live-dot"></span> LIVE
-                        </div>
-                        <div class="absolute bottom-4 right-4 bg-black/70 backdrop-blur-md text-white px-3 py-1.5 rounded-xl text-[11px] font-bold">
-                            \${d.viewers.toLocaleString()} watching
+                <div class="bg-white rounded-[2rem] p-3 shadow-sm border hover:shadow-xl transition-all cursor-pointer group" onclick="window.open('https://youtube.com/watch?v=\${d.video_id}')">
+                    <div class="relative mb-3 overflow-hidden rounded-[1.2rem] h-32">
+                        <img src="\${d.thumbnail}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500">
+                        <div class="absolute top-2 left-2 bg-red-600 text-white px-2 py-0.5 rounded text-[8px] font-black flex items-center gap-1 shadow-lg">
+                            <span class="w-1.5 h-1.5 bg-white rounded-full live-dot"></span> LIVE
                         </div>
                     </div>
-                    <h4 class="font-black text-slate-900 line-clamp-2 mb-2 group-hover:text-red-600">\${d.video_title}</h4>
-                    <p class="text-[11px] font-black text-slate-400 uppercase tracking-tight">\${d.channel_name}</p>
+                    <div class="flex items-center gap-1.5 mb-1.5">
+                        <span class="text-[11px] font-black text-red-600 bg-red-50 px-2 py-0.5 rounded-md leading-none">
+                            \${d.viewers.toLocaleString()}명 시청 중
+                        </span>
+                    </div>
+                    <h4 class="font-black text-slate-900 line-clamp-1 text-xs mb-1 group-hover:text-red-600 leading-tight">\${d.video_title}</h4>
+                    <p class="text-[10px] font-black text-slate-400 uppercase tracking-tight truncate">\${d.channel_name}</p>
                 </div>\`).join('');
         }
 
