@@ -15,7 +15,7 @@ export default {
         const url = new URL(request.url);
         const region = url.searchParams.get("region") || "KR";
 
-        // 1. 실시간 라이브 API (KV 캐시 적용)
+        // 1. 실시간 라이브 API
         if (url.pathname === "/api/live-ranking") {
             const cacheKey = `live_${region}`;
             if (env.KV) {
@@ -28,7 +28,7 @@ export default {
             return new Response(data, { headers: { "Content-Type": "application/json" } });
         }
 
-        // 2. 채널 랭킹 API (조회수 정렬 및 SQL 최적화)
+        // 2. 채널 랭킹 API (SQL 최적화)
         if (url.pathname === "/api/ranking") {
             const sort = url.searchParams.get("sort") || "growth";
             const category = url.searchParams.get("category") || "all";
@@ -58,7 +58,7 @@ export default {
             return new Response(JSON.stringify(results || []), { headers: { "Content-Type": "application/json" } });
         }
 
-        // 3. 채널 히스토리 API (중복 날짜 제거)
+        // 3. 채널 히스토리 API
         if (url.pathname === "/api/channel-history") {
             const channelId = url.searchParams.get("id");
             const { results } = await env.DB.prepare(`SELECT rank_date, MAX(subs) as subs, MAX(views) as views FROM ChannelStats WHERE channel_id = ? GROUP BY rank_date ORDER BY rank_date ASC LIMIT 14`).bind(channelId).all();
@@ -80,13 +80,8 @@ export default {
 
     async syncLiveStreams(env, region) {
         const API_KEY = this.getApiKey(env);
-        let query = "live"; let lang = "en";
-        if (region === 'KR') { query = "라이브"; lang = "ko"; }
-        else if (region === 'JP') { query = "ライブ"; lang = "ja"; }
-        else if (region === 'BR') { query = "ao vivo"; lang = "pt"; }
-        else if (region === 'FR') { query = "en direct"; lang = "fr"; }
-
-        const res = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&eventType=live&regionCode=${region}&q=${encodeURIComponent(query)}&relevanceLanguage=${lang}&maxResults=25&key=${API_KEY}`);
+        let query = region === 'KR' ? "라이브" : (region === 'BR' ? "ao vivo" : (region === 'FR' ? "en direct" : "live"));
+        const res = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&eventType=live&regionCode=${region}&q=${encodeURIComponent(query)}&maxResults=25&key=${API_KEY}`);
         const data = await res.json();
         if (data.items) {
             const videoIds = data.items.map(i => i.id.videoId).join(',');
@@ -154,18 +149,14 @@ const HTML_CONTENT = `
 <body class="pb-10">
     <nav class="sticky top-0 z-50 bg-white/80 backdrop-blur-xl border-b shadow-sm px-6 py-4">
         <div class="max-w-6xl mx-auto flex justify-between items-center">
-            <h1 class="text-2xl font-black tracking-tighter italic uppercase underline decoration-red-600 underline-offset-4">TUBE <span class="text-red-600">TREND PRO</span></h1>
+            <h1 class="text-2xl font-black italic tracking-tighter uppercase underline decoration-red-600 underline-offset-4">TUBE <span class="text-red-600">TREND PRO</span></h1>
             <div class="flex items-center gap-3">
-                <select id="regionSelect" onchange="loadData()" class="bg-slate-100 border-none rounded-2xl px-4 py-2 text-xs font-bold outline-none cursor-pointer hover:bg-slate-200 transition-all">
-                    <option value="KR" selected>🇰🇷 Korea</option>
-                    <option value="US">🇺🇸 USA</option>
-                    <option value="JP">🇯🇵 Japan</option>
-                    <option value="IN">🇮🇳 India</option>
-                    <option value="BR">🇧🇷 Brazil</option>
-                    <option value="DE">🇩🇪 Germany</option>
-                    <option value="FR">🇫🇷 France</option>
+                <select id="regionSelect" onchange="loadData()" class="bg-slate-100 border-none rounded-2xl px-4 py-2 text-xs font-bold outline-none cursor-pointer">
+                    <option value="KR" selected>🇰🇷 Korea</option><option value="US">🇺🇸 USA</option><option value="JP">🇯🇵 Japan</option>
+                    <option value="IN">🇮🇳 India</option><option value="BR">🇧🇷 Brazil</option><option value="DE">🇩🇪 Germany</option><option value="FR">🇫🇷 France</option>
                 </select>
-                <button onclick="updateSystem()" id="syncBtn" class="bg-slate-900 text-white px-5 py-2.5 rounded-2xl text-xs font-bold hover:bg-red-600 transition-all active:scale-95 shadow-lg shadow-slate-200">Sync Data</button>
+                <button onclick="downloadCSV()" class="bg-emerald-600 text-white px-5 py-2.5 rounded-2xl text-xs font-bold hover:bg-emerald-700 shadow-lg transition-all active:scale-95">CSV</button>
+                <button onclick="updateSystem()" id="syncBtn" class="bg-slate-900 text-white px-5 py-2.5 rounded-2xl text-xs font-bold hover:bg-red-600 transition-all shadow-lg active:scale-95">Sync Data</button>
             </div>
         </div>
     </nav>
@@ -174,10 +165,12 @@ const HTML_CONTENT = `
         <div id="syncStatus" class="hidden mb-6 p-4 bg-red-50 text-red-600 rounded-[2rem] border border-red-100 text-sm font-black text-center animate-pulse">
             데이터 동기화가 백그라운드에서 시작되었습니다. 약 5초 후 새로고침 해주세요.
         </div>
-        <div class="flex gap-2 mb-10 bg-slate-100 p-1.5 rounded-[2rem] w-fit border border-slate-200 mx-auto shadow-inner">
+
+        <div class="flex gap-2 mb-10 bg-slate-100 p-1.5 rounded-[2rem] w-fit border border-slate-200 mx-auto">
             <button onclick="switchTab('ranking')" id="btn-tab-rank" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all tab-active">CHANNEL RANK</button>
             <button onclick="switchTab('live')" id="btn-tab-live" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600">LIVE NOW</button>
         </div>
+
         <div id="section-ranking" class="block">
             <div class="flex flex-col md:flex-row justify-between gap-4 mb-8">
                 <input type="text" id="searchInput" oninput="debounceSearch()" placeholder="Search creators..." class="w-full md:w-96 p-4 rounded-[1.5rem] border-2 border-slate-100 bg-white font-bold outline-none focus:border-red-600 transition-all shadow-sm">
@@ -198,6 +191,7 @@ const HTML_CONTENT = `
                 </table>
             </div>
         </div>
+
         <div id="section-live" class="hidden">
             <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-6" id="live-grid"></div>
         </div>
@@ -211,7 +205,7 @@ const HTML_CONTENT = `
                     <img id="mThumb" class="w-24 h-24 rounded-[2.5rem] shadow-2xl border-4 border-white object-cover">
                     <div class="flex-1">
                         <h3 id="mTitle" class="text-2xl font-black text-slate-900 leading-tight mb-3">Channel</h3>
-                        <a id="mChannelLink" target="_blank" class="bg-red-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase shadow-lg shadow-red-100 hover:bg-red-700 transition-all active:scale-95">Visit Channel</a>
+                        <a id="mChannelLink" target="_blank" class="bg-red-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase shadow-lg shadow-red-100 hover:bg-red-700 transition-all">Visit Channel</a>
                     </div>
                 </div>
             </div>
@@ -269,19 +263,17 @@ const HTML_CONTENT = `
             try {
                 const res = await fetch(endpoint);
                 const data = await res.json();
-                if (currentTab === 'ranking') renderRanking(data);
+                if (currentTab === 'ranking') { currentRankData = data; renderRanking(data); }
                 else renderLive(data);
             } catch (e) { console.error(e); }
         }
 
         function renderRanking(data) {
-            const header = document.getElementById('growth-header');
-            header.innerText = currentSort === 'views' ? 'View Growth' : '24h Growth';
-            
+            document.getElementById('growth-header').innerText = currentSort === 'views' ? 'View Growth' : '24h Growth';
             document.getElementById('table-body').innerHTML = data.map((item, idx) => {
                 const growthVal = currentSort === 'views' ? item.views_growth : item.growth;
                 return \`
-                <tr onclick="openModal('\${item.id}', '\${item.title.replace(/'/g, "")}', '\${item.thumbnail}', \${item.current_subs}, \${item.current_views}, \${growthVal})" class="group hover:bg-slate-50 transition-all cursor-pointer">
+                <tr onclick="openModal('\${item.id}', '\${item.title.replace(/'/g, "")}', '\${item.thumbnail}', \${item.current_subs}, \${item.current_views}, \${growthVal})" class="group hover:bg-slate-50 transition-all cursor-pointer border-b">
                     <td class="p-6 text-center text-xl font-black text-slate-200 group-hover:text-red-600 transition-colors">\${idx + 1}</td>
                     <td class="p-6 flex items-center gap-5">
                         <img src="\${item.thumbnail}" class="w-14 h-14 rounded-2xl shadow-sm object-cover">
@@ -307,6 +299,19 @@ const HTML_CONTENT = `
                 </div>\`).join('');
         }
 
+        function downloadCSV() {
+            if (!currentRankData || currentRankData.length === 0) { alert("데이터가 없습니다."); return; }
+            let csv = "\uFEFFRank,Channel Name,Country,Category,Subscribers,Total Views,Growth\\n";
+            currentRankData.forEach((item, idx) => {
+                const growthVal = currentSort === 'views' ? item.views_growth : item.growth;
+                csv += \`\${idx + 1},"\${item.title.replace(/"/g, '""')}",\${item.country},\${categoryMap[item.category] || 'ETC'},\${item.current_subs},\${item.current_views},\${growthVal}\\n\`;
+            });
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+            link.download = \`TubeTrend_\${new Date().toISOString().slice(0,10)}.csv\`;
+            link.click();
+        }
+
         async function openModal(id, title, thumb, subs, views, growth) {
             document.getElementById('modal').classList.remove('hidden');
             document.getElementById('mTitle').innerText = title;
@@ -326,7 +331,6 @@ const HTML_CONTENT = `
         }
 
         function toggleChartType(type) { currentChartType = type; updateChartButtons(); renderChart(); }
-        
         function updateChartButtons() {
             const isSubs = currentChartType === 'subs';
             document.getElementById('btn-chart-subs').className = isSubs ? "px-6 py-2 rounded-xl text-[10px] font-black transition-all tab-active" : "px-6 py-2 rounded-xl text-[10px] font-black transition-all text-slate-400";
@@ -342,11 +346,7 @@ const HTML_CONTENT = `
                 type: 'line',
                 data: {
                     labels: historyData.map(d => d.rank_date.slice(5)),
-                    datasets: [{ 
-                        data: historyData.map(d => isSubs ? d.subs : d.views), 
-                        borderColor: color, backgroundColor: isSubs ? 'rgba(220, 38, 38, 0.1)' : 'rgba(37, 99, 235, 0.1)', 
-                        borderWidth: 4, tension: 0.4, fill: true, pointRadius: 4, pointBackgroundColor: color 
-                    }]
+                    datasets: [{ data: historyData.map(d => isSubs ? d.subs : d.views), borderColor: color, backgroundColor: isSubs ? 'rgba(220, 38, 38, 0.1)' : 'rgba(37, 99, 235, 0.1)', borderWidth: 4, tension: 0.4, fill: true, pointRadius: 4, pointBackgroundColor: color }]
                 },
                 options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { border: { display: false }, grid: { color: '#f1f5f9' }, ticks: { callback: v => formatNum(v), font: { size: 9, weight: 'bold' } } }, x: { border: { display: false }, grid: { display: false }, ticks: { font: { size: 9, weight: 'bold' } } } } }
             });
@@ -361,6 +361,7 @@ const HTML_CONTENT = `
 
         function closeModal() { document.getElementById('modal').classList.add('hidden'); if(chart) chart.destroy(); }
         
+        // 버튼 색상 수정된 changeSort 함수
         function changeSort(s) { 
             currentSort = s; 
             document.getElementById('tab-growth').className = s === 'growth' ? 'px-6 py-2 rounded-2xl text-xs font-black transition-all tab-active' : 'px-6 py-2 rounded-2xl text-xs font-black transition-all text-slate-400';
@@ -371,10 +372,11 @@ const HTML_CONTENT = `
         function changeCategory(c) {
             currentCategory = c;
             document.querySelectorAll('#cat-list button').forEach(b => b.className = "px-5 py-2.5 rounded-2xl text-[11px] font-black bg-white text-slate-400 border border-slate-100 transition-all hover:bg-slate-50");
-            if(c === 'all') document.getElementById('cat-all').className = "px-5 py-2.5 rounded-2xl text-[11px] font-black bg-slate-900 text-white transition-all shadow-md";
-            else document.getElementById('cat-' + c).className = "px-5 py-2.5 rounded-2xl text-[11px] font-black bg-slate-900 text-white transition-all shadow-md";
+            const activeId = c === 'all' ? 'cat-all' : 'cat-' + c;
+            if(document.getElementById(activeId)) document.getElementById(activeId).className = "px-5 py-2.5 rounded-2xl text-[11px] font-black bg-slate-900 text-white transition-all shadow-md";
             loadData();
         }
+
         function debounceSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(loadData, 300); }
 
         const list = document.getElementById('cat-list');
