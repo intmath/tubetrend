@@ -5,6 +5,8 @@ export default {
         return keys[Math.floor(Math.random() * keys.length)];
     },
 
+
+
     async fetch(request, env) {
         const url = new URL(request.url);
         const region = url.searchParams.get("region") || "KR";
