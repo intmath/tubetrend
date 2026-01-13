@@ -23,7 +23,6 @@ export default {
             return new Response(JSON.stringify(results || []), { headers: { "Content-Type": "application/json" } });
         }
 
-        // [수정됨] 중복 방지 로직이 강화된 채널 랭킹 API
         if (url.pathname === "/api/ranking") {
             const sort = url.searchParams.get("sort") || "growth";
             const category = url.searchParams.get("category") || "all";
@@ -50,7 +49,7 @@ export default {
                 LEFT JOIN ChannelStats y ON c.id = y.channel_id 
                      AND y.rank_date = DATE((SELECT MAX(rank_date) FROM ChannelStats WHERE channel_id = c.id), '-1 day')
                 ${whereClause}
-                GROUP BY c.id  -- 핵심: 채널 ID로 그룹화하여 중복 제거
+                GROUP BY c.id
                 ORDER BY ${orderBy} LIMIT 100
             `;
             const { results } = await env.DB.prepare(query).bind(...bindings).all();
@@ -106,9 +105,9 @@ export default {
 
     async performMassDiscover(env, region) {
         const API_KEY = this.getApiKey(env);
-        const categories = ["", "1", "10", "17", "20", "23", "24", "25", "28"];
+        const categories = ["1", "2", "10", "15", "17", "19", "20", "22", "23", "24", "25", "26", "27", "28", "29"];
         for (const catId of categories) {
-            const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet&chart=mostPopular&regionCode=${region}${catId ? `&videoCategoryId=${catId}` : ""}&maxResults=50&key=${API_KEY}`);
+            const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet&chart=mostPopular&regionCode=${region}&videoCategoryId=${catId}&maxResults=50&key=${API_KEY}`);
             const data = await res.json();
             if (data.items) {
                 const stmts = data.items.map(item => env.DB.prepare(`INSERT INTO Channels (id, title, country, category, thumbnail) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET country = excluded.country`).bind(item.snippet.channelId, item.snippet.channelTitle, region, item.snippet.categoryId || "0", item.snippet.thumbnails.default.url));
@@ -137,7 +136,6 @@ export default {
     }
 };
 
-
 const HTML_CONTENT = `
 <!DOCTYPE html>
 <html lang="ko">
@@ -151,7 +149,13 @@ const HTML_CONTENT = `
     <style>
         body { font-family: 'Pretendard Variable', sans-serif; background-color: #f8fafc; color: #0f172a; }
         .tab-active { background: #dc2626 !important; color: white !important; border-color: #dc2626 !important; }
-        .no-scrollbar::-webkit-scrollbar { display: none; }
+        /* 카테고리 여러 줄 표시를 위한 스타일 수정 */
+        .category-container { 
+            display: flex; 
+            flex-wrap: wrap; /* 줄바꿈 허용 */
+            gap: 0.5rem; 
+            padding: 1rem 0; 
+        }
         .live-dot { animation: pulse 1.5s infinite; }
         @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
     </style>
@@ -189,12 +193,14 @@ const HTML_CONTENT = `
                     <button onclick="changeSort('views')" id="tab-views" class="px-6 py-2.5 rounded-xl text-xs font-black transition-all bg-transparent text-slate-500">Views</button>
                 </div>
             </div>
-            <div class="category-container no-scrollbar flex gap-2 overflow-x-auto mb-6" id="cat-list">
-                <button onclick="changeCategory('all')" id="cat-all" class="px-6 py-2.5 rounded-xl text-xs font-black bg-slate-950 text-white flex-shrink-0">ALL TOPICS</button>
+            
+            <div class="category-container" id="cat-list">
+                <button onclick="changeCategory('all')" id="cat-all" class="px-5 py-2 rounded-xl text-[11px] font-black bg-slate-950 text-white transition-all">ALL TOPICS</button>
             </div>
-            <div class="bg-white rounded-[2.5rem] border shadow-xl overflow-x-auto">
+
+            <div class="bg-white rounded-[2.5rem] border shadow-xl overflow-x-auto mt-4">
                 <table class="w-full text-left min-w-[850px]">
-                    <thead class="bg-slate-50 border-b">
+                    <thead class="bg-slate-50 border-b text-slate-400 font-black text-[10px] uppercase">
                         <tr><th class="p-6 text-center w-20">Rank</th><th class="p-6">Channel Info</th><th class="p-6 text-right">Subscribers</th><th class="p-6 text-right">Total Views</th><th class="p-6 text-right">24h Growth</th></tr>
                     </thead>
                     <tbody id="table-body"></tbody>
@@ -240,7 +246,7 @@ const HTML_CONTENT = `
 
     <script>
         let currentTab = 'ranking', currentSort = 'growth', currentCategory = 'all', currentRankData = [], chart, historyData = [], currentChartType = 'subs', searchTimer;
-        const categoryMap = {"1":"Film","2":"Autos","10":"Music","15":"Pets","17":"Sports","19":"Travel","20":"Gaming","22":"Blogs","23":"Comedy","24":"Entertain","25":"News","26":"Howto","27":"Edu","28":"Tech","29":"Nonprofit"};
+        const categoryMap = {"1":"Film & Animation","2":"Autos & Vehicles","10":"Music","15":"Pets & Animals","17":"Sports","19":"Travel & Events","20":"Gaming","22":"People & Blogs","23":"Comedy","24":"Entertainment","25":"News & Politics","26":"Howto & Style","27":"Education","28":"Science & Tech","29":"Nonprofits"};
 
         function formatNum(n) {
             if (n === null || n === undefined) return "New";
@@ -368,8 +374,8 @@ const HTML_CONTENT = `
         }
         function changeCategory(c) {
             currentCategory = c;
-            document.querySelectorAll('#cat-list button').forEach(b => b.className = "px-6 py-2.5 rounded-xl text-xs font-black bg-white text-slate-400 border-2 border-slate-100 whitespace-nowrap transition-all flex-shrink-0");
-            document.getElementById('cat-' + c).className = "px-6 py-2.5 rounded-xl text-xs font-black bg-slate-950 text-white flex-shrink-0 tab-active";
+            document.querySelectorAll('#cat-list button').forEach(b => b.className = "px-5 py-2 rounded-xl text-[11px] font-black bg-white text-slate-400 border transition-all");
+            document.getElementById('cat-' + c).className = "px-5 py-2 rounded-xl text-[11px] font-black bg-slate-950 text-white transition-all";
             loadRanking();
         }
         async function updateSystem() {
@@ -385,7 +391,7 @@ const HTML_CONTENT = `
         const list = document.getElementById('cat-list');
         Object.keys(categoryMap).forEach(id => {
             const b = document.createElement('button'); b.id = 'cat-' + id; b.innerText = categoryMap[id].toUpperCase();
-            b.className = "px-6 py-2.5 rounded-xl text-xs font-black bg-white text-slate-400 border-2 border-slate-100 whitespace-nowrap transition-all flex-shrink-0";
+            b.className = "px-5 py-2 rounded-xl text-[11px] font-black bg-white text-slate-400 border transition-all";
             b.onclick = () => changeCategory(id); list.appendChild(b);
         });
         loadData();
