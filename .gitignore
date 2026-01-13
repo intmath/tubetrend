@@ -1,3 +1,4 @@
 # .gitignore 파일
 .wrangler
 .dev.vars
+node_modules
