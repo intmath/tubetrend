@@ -17,18 +17,11 @@ export default {
 
         // 1. 실시간 라이브 API
         if (url.pathname === "/api/live-ranking") {
-            const cacheKey = `live_${region}`;
-            if (env.KV) {
-                const cached = await env.KV.get(cacheKey);
-                if (cached) return new Response(cached, { headers: { "Content-Type": "application/json", "X-Cache": "HIT" } });
-            }
             const { results } = await env.DB.prepare(`SELECT channel_name, video_title, viewers, thumbnail, video_id FROM LiveRankings WHERE region = ? ORDER BY viewers DESC LIMIT 50`).bind(region).all();
-            const data = JSON.stringify(results || []);
-            if (env.KV) ctx.waitUntil(env.KV.put(cacheKey, data, { expirationTtl: 300 }));
-            return new Response(data, { headers: { "Content-Type": "application/json" } });
+            return new Response(JSON.stringify(results || []), { headers: { "Content-Type": "application/json" } });
         }
 
-        // 2. 채널 랭킹 API (SQL 최적화)
+        // 2. 채널 랭킹 API (SQL 최적화 적용)
         if (url.pathname === "/api/ranking") {
             const sort = url.searchParams.get("sort") || "growth";
             const category = url.searchParams.get("category") || "all";
@@ -41,6 +34,7 @@ export default {
             if (searchStr.trim() !== "") { conditions.push("c.title LIKE ?"); bindings.push(`%${searchStr}%`); }
 
             const orderBy = sort === "views" ? "views_growth DESC" : "growth DESC, current_subs DESC";
+            const whereClause = conditions.join(" AND ");
 
             const query = `
                 WITH LatestDate AS (SELECT MAX(rank_date) as d FROM ChannelStats)
@@ -51,21 +45,37 @@ export default {
                 FROM Channels c
                 JOIN ChannelStats t ON c.id = t.channel_id AND t.rank_date = (SELECT d FROM LatestDate)
                 LEFT JOIN ChannelStats y ON c.id = y.channel_id AND y.rank_date = DATE((SELECT d FROM LatestDate), '-1 day')
-                WHERE ${conditions.join(" AND ")}
+                WHERE ${whereClause}
                 GROUP BY c.id ORDER BY ${orderBy} LIMIT 100
             `;
             const { results } = await env.DB.prepare(query).bind(...bindings).all();
             return new Response(JSON.stringify(results || []), { headers: { "Content-Type": "application/json" } });
         }
 
-        // 3. 채널 히스토리 API
+        // 3. 인기 동영상 API (TRENDING - 50개)
+        if (url.pathname === "/api/trending") {
+            const category = url.searchParams.get("category") || "all";
+            const API_KEY = this.getApiKey(env);
+            const catId = category === 'all' ? '0' : category;
+            const trendUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&chart=mostPopular&regionCode=${region}&videoCategoryId=${catId}&maxResults=50&key=${API_KEY}`;
+            const res = await fetch(trendUrl);
+            const data = await res.json();
+            const results = data.items?.map(item => ({
+                id: item.id, title: item.snippet.title, channel: item.snippet.channelTitle,
+                thumbnail: item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default.url,
+                views: item.statistics.viewCount, date: item.snippet.publishedAt.slice(0, 10)
+            })) || [];
+            return new Response(JSON.stringify(results), { headers: { "Content-Type": "application/json" } });
+        }
+
+        // 4. 채널 히스토리 API
         if (url.pathname === "/api/channel-history") {
             const channelId = url.searchParams.get("id");
             const { results } = await env.DB.prepare(`SELECT rank_date, MAX(subs) as subs, MAX(views) as views FROM ChannelStats WHERE channel_id = ? GROUP BY rank_date ORDER BY rank_date ASC LIMIT 14`).bind(channelId).all();
             return new Response(JSON.stringify(results || []), { headers: { "Content-Type": "application/json" } });
         }
 
-        // 4. 데이터 동기화
+        // 5. 대량 발견 및 동기화
         if (url.pathname === "/mass-discover") {
             ctx.waitUntil((async () => {
                 await this.performMassDiscover(env, region);
@@ -149,38 +159,40 @@ const HTML_CONTENT = `
 <body class="pb-10">
     <nav class="sticky top-0 z-50 bg-white/80 backdrop-blur-xl border-b shadow-sm px-6 py-4">
         <div class="max-w-6xl mx-auto flex justify-between items-center">
-            <h1 class="text-2xl font-black italic tracking-tighter uppercase underline decoration-red-600 underline-offset-4">TUBE <span class="text-red-600">TREND PRO</span></h1>
+            <h1 class="text-2xl font-black tracking-tighter uppercase underline decoration-red-600 underline-offset-4 italic">TUBE <span class="text-red-600">TREND PRO</span></h1>
             <div class="flex items-center gap-3">
-                <select id="regionSelect" onchange="loadData()" class="bg-slate-100 border-none rounded-2xl px-4 py-2 text-xs font-bold outline-none cursor-pointer">
+                <select id="regionSelect" onchange="loadData()" class="bg-slate-100 border-none rounded-2xl px-4 py-2 text-xs font-bold outline-none cursor-pointer hover:bg-slate-200 transition-all">
                     <option value="KR" selected>🇰🇷 Korea</option><option value="US">🇺🇸 USA</option><option value="JP">🇯🇵 Japan</option>
                     <option value="IN">🇮🇳 India</option><option value="BR">🇧🇷 Brazil</option><option value="DE">🇩🇪 Germany</option><option value="FR">🇫🇷 France</option>
                 </select>
-                <button onclick="downloadCSV()" class="bg-emerald-600 text-white px-5 py-2.5 rounded-2xl text-xs font-bold hover:bg-emerald-700 shadow-lg transition-all active:scale-95">CSV</button>
-                <button onclick="updateSystem()" id="syncBtn" class="bg-slate-900 text-white px-5 py-2.5 rounded-2xl text-xs font-bold hover:bg-red-600 transition-all shadow-lg active:scale-95">Sync Data</button>
+                <button onclick="downloadCSV()" class="bg-emerald-600 text-white px-5 py-2.5 rounded-2xl text-xs font-bold shadow-lg">CSV</button>
+                <button onclick="updateSystem()" id="syncBtn" class="bg-slate-900 text-white px-5 py-2.5 rounded-2xl text-xs font-bold shadow-lg">Sync Data</button>
             </div>
         </div>
     </nav>
 
     <main class="max-w-6xl mx-auto px-4 mt-10">
         <div id="syncStatus" class="hidden mb-6 p-4 bg-red-50 text-red-600 rounded-[2rem] border border-red-100 text-sm font-black text-center animate-pulse">
-            데이터 동기화가 백그라운드에서 시작되었습니다. 약 5초 후 새로고침 해주세요.
+            데이터 동기화가 시작되었습니다. 약 5초 후 새로고침 해주세요.
         </div>
 
-        <div class="flex gap-2 mb-10 bg-slate-100 p-1.5 rounded-[2rem] w-fit border border-slate-200 mx-auto">
+        <div class="flex gap-2 mb-8 bg-slate-100 p-1.5 rounded-[2rem] w-fit border border-slate-200 mx-auto shadow-inner">
             <button onclick="switchTab('ranking')" id="btn-tab-rank" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all tab-active">CHANNEL RANK</button>
+            <button onclick="switchTab('trending')" id="btn-tab-trend" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600">TRENDING</button>
             <button onclick="switchTab('live')" id="btn-tab-live" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600">LIVE NOW</button>
+        </div>
+
+        <div class="flex flex-wrap gap-2 mb-10 justify-center" id="cat-list">
+            <button onclick="changeCategory('all')" id="cat-all" class="px-5 py-2.5 rounded-2xl text-[11px] font-black bg-slate-900 text-white transition-all shadow-md">ALL TOPICS</button>
         </div>
 
         <div id="section-ranking" class="block">
             <div class="flex flex-col md:flex-row justify-between gap-4 mb-8">
                 <input type="text" id="searchInput" oninput="debounceSearch()" placeholder="Search creators..." class="w-full md:w-96 p-4 rounded-[1.5rem] border-2 border-slate-100 bg-white font-bold outline-none focus:border-red-600 transition-all shadow-sm">
-                <div class="flex bg-slate-100 p-1 rounded-[1.5rem] border border-slate-200">
+                <div class="flex bg-slate-100 p-1 rounded-[1.5rem] border border-slate-200 shadow-inner">
                     <button onclick="changeSort('growth')" id="tab-growth" class="px-6 py-2 rounded-2xl text-xs font-black transition-all tab-active">GROWTH</button>
                     <button onclick="changeSort('views')" id="tab-views" class="px-6 py-2 rounded-2xl text-xs font-black transition-all text-slate-400">VIEWS</button>
                 </div>
-            </div>
-            <div class="flex flex-wrap gap-2 mb-8" id="cat-list">
-                <button onclick="changeCategory('all')" id="cat-all" class="px-5 py-2.5 rounded-2xl text-[11px] font-black bg-slate-900 text-white transition-all shadow-md">ALL TOPICS</button>
             </div>
             <div class="bg-white rounded-[2.5rem] border border-slate-100 shadow-2xl overflow-x-auto">
                 <table class="w-full text-left min-w-[850px]">
@@ -190,6 +202,10 @@ const HTML_CONTENT = `
                     <tbody id="table-body" class="divide-y divide-slate-50"></tbody>
                 </table>
             </div>
+        </div>
+
+        <div id="section-trending" class="hidden">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6" id="trend-grid"></div>
         </div>
 
         <div id="section-live" class="hidden">
@@ -240,62 +256,82 @@ const HTML_CONTENT = `
         const categoryMap = {"1":"Film & Animation","2":"Autos & Vehicles","10":"Music","15":"Pets & Animals","17":"Sports","19":"Travel & Events","20":"Gaming","22":"People & Blogs","23":"Comedy","24":"Entertainment","25":"News & Politics","26":"Howto & Style","27":"Education","28":"Science & Tech","29":"Nonprofits"};
 
         function formatNum(n) {
-            if (n === null || n === undefined) return "0";
-            if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
-            if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
-            if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
-            return n.toLocaleString();
+            if (!n) return "0";
+            let val = parseInt(n);
+            if (val >= 1e9) return (val / 1e9).toFixed(1) + 'B';
+            if (val >= 1e6) return (val / 1e6).toFixed(1) + 'M';
+            if (val >= 1e3) return (val / 1e3).toFixed(1) + 'K';
+            return val.toLocaleString();
         }
 
         async function switchTab(t) {
             currentTab = t;
-            document.getElementById('btn-tab-rank').className = t === 'ranking' ? 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all tab-active' : 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600';
-            document.getElementById('btn-tab-live').className = t === 'live' ? 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all tab-active' : 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600';
+            ['btn-tab-rank', 'btn-tab-live', 'btn-tab-trend'].forEach(id => document.getElementById(id).className = 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600');
+            const activeId = t === 'ranking' ? 'btn-tab-rank' : (t === 'live' ? 'btn-tab-live' : 'btn-tab-trend');
+            document.getElementById(activeId).className = 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all tab-active';
+            
             document.getElementById('section-ranking').style.display = t === 'ranking' ? 'block' : 'none';
             document.getElementById('section-live').style.display = t === 'live' ? 'block' : 'none';
+            document.getElementById('section-trending').style.display = t === 'trending' ? 'block' : 'none';
+            document.getElementById('cat-list').style.display = t === 'live' ? 'none' : 'flex';
             loadData();
         }
 
         async function loadData() {
             const region = document.getElementById('regionSelect').value;
             const search = document.getElementById('searchInput').value;
-            const endpoint = currentTab === 'ranking' ? \`/api/ranking?region=\${region}&sort=\${currentSort}&category=\${currentCategory}&search=\${encodeURIComponent(search)}\` : \`/api/live-ranking?region=\${region}\`;
+            let endpoint = currentTab === 'ranking' ? \`/api/ranking?region=\${region}&sort=\${currentSort}&category=\${currentCategory}&search=\${encodeURIComponent(search)}\` : (currentTab === 'live' ? \`/api/live-ranking?region=\${region}\` : \`/api/trending?region=\${region}&category=\${currentCategory}\`);
+            
             try {
                 const res = await fetch(endpoint);
                 const data = await res.json();
                 if (currentTab === 'ranking') { currentRankData = data; renderRanking(data); }
-                else renderLive(data);
+                else if (currentTab === 'live') renderLive(data);
+                else renderTrending(data);
             } catch (e) { console.error(e); }
         }
 
         function renderRanking(data) {
             document.getElementById('growth-header').innerText = currentSort === 'views' ? 'View Growth' : '24h Growth';
-            document.getElementById('table-body').innerHTML = data.map((item, idx) => {
-                const growthVal = currentSort === 'views' ? item.views_growth : item.growth;
-                return \`
-                <tr onclick="openModal('\${item.id}', '\${item.title.replace(/'/g, "")}', '\${item.thumbnail}', \${item.current_subs}, \${item.current_views}, \${growthVal})" class="group hover:bg-slate-50 transition-all cursor-pointer border-b">
-                    <td class="p-6 text-center text-xl font-black text-slate-200 group-hover:text-red-600 transition-colors">\${idx + 1}</td>
+            document.getElementById('table-body').innerHTML = data.map((item, idx) => \`
+                <tr onclick="openModal('\${item.id}', '\${item.title.replace(/'/g, "")}', '\${item.thumbnail}', \${item.current_subs}, \${item.current_views}, \${currentSort === 'views' ? item.views_growth : item.growth})" class="group hover:bg-slate-50 transition-all cursor-pointer border-b">
+                    <td class="p-6 text-center text-xl font-black text-slate-200 group-hover:text-red-600">\${idx + 1}</td>
                     <td class="p-6 flex items-center gap-5">
                         <img src="\${item.thumbnail}" class="w-14 h-14 rounded-2xl shadow-sm object-cover">
-                        <div class="font-black text-slate-900 group-hover:text-red-600 transition-colors">\${item.title}</div>
+                        <div class="font-black text-slate-900 group-hover:text-red-600">\${item.title}</div>
                     </td>
                     <td class="p-6 text-right font-mono font-black text-slate-900">\${formatNum(item.current_subs)}</td>
                     <td class="p-6 text-right font-mono font-bold text-slate-400">\${formatNum(item.current_views)}</td>
-                    <td class="p-6 text-right text-emerald-600 font-black text-lg">+\${formatNum(growthVal)}</td>
-                </tr>\`;
-            }).join('');
+                    <td class="p-6 text-right text-emerald-600 font-black text-lg">+\${formatNum(currentSort === 'views' ? item.views_growth : item.growth)}</td>
+                </tr>\`).join('');
         }
 
         function renderLive(data) {
             document.getElementById('live-grid').innerHTML = data.map(d => \`
                 <div class="bg-white rounded-[2rem] p-3 shadow-sm border border-slate-100 hover:shadow-2xl transition-all cursor-pointer group" onclick="window.open('https://youtube.com/watch?v=\${d.video_id}')">
-                    <div class="relative mb-4 overflow-hidden rounded-[1.5rem] h-32">
+                    <div class="relative mb-4 overflow-hidden rounded-[1.5rem] h-32 shadow-inner">
                         <img src="\${d.thumbnail}" class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500">
-                        <div class="absolute top-3 left-3 bg-red-600 text-white px-2 py-1 rounded-lg text-[8px] font-black flex items-center gap-1 shadow-lg shadow-red-200"><span class="w-1.5 h-1.5 bg-white rounded-full live-dot"></span> LIVE</div>
+                        <div class="absolute top-3 left-3 bg-red-600 text-white px-2 py-1 rounded-lg text-[8px] font-black flex items-center gap-1 shadow-lg"><span class="w-1.5 h-1.5 bg-white rounded-full live-dot"></span> LIVE</div>
                     </div>
                     <div class="mb-2"><span class="text-[10px] font-black text-red-600 bg-red-50 px-2 py-1 rounded-lg leading-none">\${d.viewers.toLocaleString()}명 시청 중</span></div>
                     <h4 class="font-black text-slate-900 line-clamp-1 text-xs mb-1 group-hover:text-red-600 leading-tight">\${d.video_title}</h4>
-                    <p class="text-[10px] font-black text-slate-400 uppercase truncate">\${d.channel_name}</p>
+                    <p class="text-[9px] font-bold text-slate-400 uppercase truncate">\${d.channel_name}</p>
+                </div>\`).join('');
+        }
+
+        function renderTrending(data) {
+            document.getElementById('trend-grid').innerHTML = data.map(v => \`
+                <div class="bg-white rounded-[2rem] p-3 shadow-sm border border-slate-100 hover:shadow-2xl transition-all cursor-pointer group" onclick="window.open('https://youtube.com/watch?v=\${v.id}')">
+                    <div class="relative mb-3 overflow-hidden rounded-[1.5rem] h-40 shadow-inner">
+                        <img src="\${v.thumbnail}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500">
+                    </div>
+                    <div class="px-1">
+                        <h4 class="font-black text-slate-900 line-clamp-2 text-[13px] mb-1 leading-tight group-hover:text-red-600">\${v.title}</h4>
+                        <p class="text-[10px] font-bold text-slate-400 truncate mb-2">\${v.channel}</p>
+                        <div class="flex justify-between items-center text-[10px] font-black text-slate-500 bg-slate-50 p-2 rounded-xl">
+                            <span>👁 \${formatNum(v.views)}</span><span>📅 \${v.date}</span>
+                        </div>
+                    </div>
                 </div>\`).join('');
         }
 
@@ -303,8 +339,7 @@ const HTML_CONTENT = `
             if (!currentRankData || currentRankData.length === 0) { alert("데이터가 없습니다."); return; }
             let csv = "\uFEFFRank,Channel Name,Country,Category,Subscribers,Total Views,Growth\\n";
             currentRankData.forEach((item, idx) => {
-                const growthVal = currentSort === 'views' ? item.views_growth : item.growth;
-                csv += \`\${idx + 1},"\${item.title.replace(/"/g, '""')}",\${item.country},\${categoryMap[item.category] || 'ETC'},\${item.current_subs},\${item.current_views},\${growthVal}\\n\`;
+                csv += \`\${idx + 1},"\${item.title.replace(/"/g, '""')}",\${item.country},\${categoryMap[item.category] || 'ETC'},\${item.current_subs},\${item.current_views},\${currentSort === 'views' ? item.views_growth : item.growth}\\n\`;
             });
             const link = document.createElement("a");
             link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
@@ -361,7 +396,6 @@ const HTML_CONTENT = `
 
         function closeModal() { document.getElementById('modal').classList.add('hidden'); if(chart) chart.destroy(); }
         
-        // 버튼 색상 수정된 changeSort 함수
         function changeSort(s) { 
             currentSort = s; 
             document.getElementById('tab-growth').className = s === 'growth' ? 'px-6 py-2 rounded-2xl text-xs font-black transition-all tab-active' : 'px-6 py-2 rounded-2xl text-xs font-black transition-all text-slate-400';
