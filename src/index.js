@@ -15,7 +15,6 @@ export default {
         const url = new URL(request.url);
         const region = url.searchParams.get("region") || "KR";
 
-        // [API] 실시간 라이브 데이터 조회
         if (url.pathname === "/api/live-ranking") {
             const { results } = await env.DB.prepare(`
                 SELECT channel_name, video_title, viewers, thumbnail, video_id 
@@ -24,7 +23,7 @@ export default {
             return new Response(JSON.stringify(results || []), { headers: { "Content-Type": "application/json" } });
         }
 
-        // [API] 채널 랭킹 조회
+        // [수정됨] 중복 방지 로직이 강화된 채널 랭킹 API
         if (url.pathname === "/api/ranking") {
             const sort = url.searchParams.get("sort") || "growth";
             const category = url.searchParams.get("category") || "all";
@@ -36,35 +35,44 @@ export default {
             if (searchStr.trim() !== "") { conditions.push("c.title LIKE ?"); bindings.push(`%${searchStr}%`); }
 
             const whereClause = conditions.length > 0 ? "WHERE " + conditions.join(" AND ") : "";
-            const orderBy = sort === "views" ? "t.views DESC" : "growth DESC, t.subs DESC";
+            const orderBy = sort === "views" ? "current_views DESC" : "growth DESC, current_subs DESC";
 
             const query = `
-                SELECT c.id, c.title, c.category, c.country, c.thumbnail, t.subs AS current_subs, t.views AS current_views,
-                       CASE WHEN y.subs IS NULL THEN NULL ELSE (t.subs - y.subs) END AS growth,
-                       CASE WHEN y.views IS NULL THEN NULL ELSE (t.views - y.views) END AS views_growth
+                SELECT 
+                    c.id, c.title, c.category, c.country, c.thumbnail, 
+                    MAX(t.subs) AS current_subs, 
+                    MAX(t.views) AS current_views,
+                    CASE WHEN y.subs IS NULL THEN NULL ELSE (MAX(t.subs) - MAX(y.subs)) END AS growth,
+                    CASE WHEN y.views IS NULL THEN NULL ELSE (MAX(t.views) - MAX(y.views)) END AS views_growth
                 FROM Channels c
-                JOIN ChannelStats t ON c.id = t.channel_id AND t.rank_date = (SELECT MAX(rank_date) FROM ChannelStats WHERE channel_id = c.id)
-                LEFT JOIN ChannelStats y ON c.id = y.channel_id AND y.rank_date = DATE((SELECT MAX(rank_date) FROM ChannelStats WHERE channel_id = c.id), '-1 day')
+                JOIN ChannelStats t ON c.id = t.channel_id 
+                     AND t.rank_date = (SELECT MAX(rank_date) FROM ChannelStats WHERE channel_id = c.id)
+                LEFT JOIN ChannelStats y ON c.id = y.channel_id 
+                     AND y.rank_date = DATE((SELECT MAX(rank_date) FROM ChannelStats WHERE channel_id = c.id), '-1 day')
                 ${whereClause}
+                GROUP BY c.id  -- 핵심: 채널 ID로 그룹화하여 중복 제거
                 ORDER BY ${orderBy} LIMIT 100
             `;
             const { results } = await env.DB.prepare(query).bind(...bindings).all();
             return new Response(JSON.stringify(results || []), { headers: { "Content-Type": "application/json" } });
         }
 
-        // [API] 채널 히스토리 조회
         if (url.pathname === "/api/channel-history") {
             const channelId = url.searchParams.get("id");
-            const { results } = await env.DB.prepare(`SELECT rank_date, subs, views FROM ChannelStats WHERE channel_id = ? ORDER BY rank_date ASC LIMIT 7`).bind(channelId).all();
+            const { results } = await env.DB.prepare(`SELECT rank_date, subs, views FROM ChannelStats WHERE channel_id = ? GROUP BY rank_date ORDER BY rank_date ASC LIMIT 7`).bind(channelId).all();
             return new Response(JSON.stringify(results || []), { headers: { "Content-Type": "application/json" } });
         }
 
-        // [관리] 데이터 수집
+        if (url.pathname === "/sync-live") {
+            try { await this.syncLiveStreams(env, region); return new Response(JSON.stringify({ success: true })); }
+            catch (e) { return new Response(JSON.stringify({ success: false, error: e.message }), { status: 500 }); }
+        }
+
         if (url.pathname === "/mass-discover") {
             try {
                 await this.performMassDiscover(env, region);
                 await this.handleDailySync(env);
-                await this.syncLiveStreams(env, region); // 맞춤형 라이브 수집 실행
+                await this.syncLiveStreams(env, region);
                 return new Response(JSON.stringify({ success: true }));
             } catch (e) {
                 return new Response(JSON.stringify({ error: e.message }), { status: 500 });
@@ -74,30 +82,15 @@ export default {
         return new Response(HTML_CONTENT, { headers: { "Content-Type": "text/html; charset=utf-8" } });
     },
 
-    // [강화됨] 국가별 맞춤형 라이브 수집 로직
     async syncLiveStreams(env, region) {
         const API_KEY = this.getApiKey(env);
-        console.log(`[Live Sync] Start localized fetch for ${region}...`);
+        let query = "live"; let lang = "en";
+        if (region === 'KR') { query = "라이브"; lang = "ko"; }
+        else if (region === 'JP') { query = "ライブ"; lang = "ja"; }
+        else if (region === 'BR') { query = "ao vivo"; lang = "pt"; }
+        else if (region === 'IN') { query = "live"; lang = "hi"; }
 
-        // 1. 국가별 맞춤 키워드 및 언어(relevanceLanguage) 설정
-        let query = "live";
-        let lang = "en";
-
-        if (region === 'KR') {
-            query = "라이브"; lang = "ko";
-        } else if (region === 'JP') {
-            query = "ライブ"; lang = "ja";
-        } else if (region === 'BR') {
-            query = "ao vivo"; lang = "pt"; // 브라질 포르투갈어
-        } else if (region === 'IN') {
-            query = "live"; lang = "hi";    // 인도 힌디어
-        } else if (region === 'GB' || region === 'US') {
-            query = "live"; lang = "en";
-        }
-
-        // 2. 유튜브 검색 API 호출 (relevanceLanguage로 타국가 방송 필터링)
         const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&eventType=live&regionCode=${region}&q=${encodeURIComponent(query)}&relevanceLanguage=${lang}&order=viewCount&maxResults=25&key=${API_KEY}`;
-
         const searchRes = await fetch(searchUrl);
         const searchData = await searchRes.json();
 
@@ -105,25 +98,9 @@ export default {
             const videoIds = searchData.items.map(i => i.id.videoId).join(',');
             const videoRes = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails,snippet&id=${videoIds}&key=${API_KEY}`);
             const videoData = await videoRes.json();
-
-            // 3. 기존 해당 지역 라이브 데이터 초기화 후 새 데이터 배치 저장
             await env.DB.prepare("DELETE FROM LiveRankings WHERE region = ?").bind(region).run();
-
-            const stmts = videoData.items.map(item => env.DB.prepare(`
-                INSERT INTO LiveRankings (channel_name, video_title, viewers, thumbnail, video_id, region)
-                VALUES (?, ?, ?, ?, ?, ?)
-            `).bind(
-                item.snippet.channelTitle,
-                item.snippet.title,
-                parseInt(item.liveStreamingDetails?.concurrentViewers || 0),
-                item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default.url,
-                item.id,
-                region
-            ));
+            const stmts = videoData.items.map(item => env.DB.prepare(`INSERT INTO LiveRankings (channel_name, video_title, viewers, thumbnail, video_id, region) VALUES (?, ?, ?, ?, ?, ?)`).bind(item.snippet.channelTitle, item.snippet.title, parseInt(item.liveStreamingDetails?.concurrentViewers || 0), item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default.url, item.id, region));
             await env.DB.batch(stmts);
-            console.log(`[Live Sync] Saved ${stmts.length} streams for ${region}.`);
-        } else {
-            console.log(`[Live Sync] No streams found for ${region}.`);
         }
     },
 
@@ -159,6 +136,7 @@ export default {
         }
     }
 };
+
 
 const HTML_CONTENT = `
 <!DOCTYPE html>
