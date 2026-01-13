@@ -1,7 +1,7 @@
 DROP TABLE IF EXISTS ChannelStats;
 DROP TABLE IF EXISTS Channels;
-
-CREATE TABLE Channels (
+-- 1. 채널 기본 정보 테이블
+CREATE TABLE IF NOT EXISTS Channels (
     id TEXT PRIMARY KEY,
     title TEXT,
     country TEXT,
@@ -9,10 +9,23 @@ CREATE TABLE Channels (
     thumbnail TEXT
 );
 
-CREATE TABLE ChannelStats (
+-- 2. 채널별 일일 통계 테이블
+CREATE TABLE IF NOT EXISTS ChannelStats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     channel_id TEXT,
     subs INTEGER,
     views INTEGER,
-    rank_date DATE,
-    PRIMARY KEY(channel_id, rank_date)
+    rank_date TEXT,
+    FOREIGN KEY(channel_id) REFERENCES Channels(id)
+);
+
+-- 3. 실시간 라이브 순위 테이블 (이번에 추가된 것)
+CREATE TABLE IF NOT EXISTS LiveRankings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_name TEXT,
+    video_title TEXT,
+    viewers INTEGER,
+    thumbnail TEXT,
+    video_id TEXT,
+    region TEXT
 );
