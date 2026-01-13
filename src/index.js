@@ -21,7 +21,7 @@ export default {
             return new Response(JSON.stringify(results || []), { headers: { "Content-Type": "application/json" } });
         }
 
-        // 2. 채널 랭킹 API (SQL 최적화 적용)
+        // 2. 채널 랭킹 API (최대 300위 확장)
         if (url.pathname === "/api/ranking") {
             const sort = url.searchParams.get("sort") || "growth";
             const category = url.searchParams.get("category") || "all";
@@ -46,13 +46,13 @@ export default {
                 JOIN ChannelStats t ON c.id = t.channel_id AND t.rank_date = (SELECT d FROM LatestDate)
                 LEFT JOIN ChannelStats y ON c.id = y.channel_id AND y.rank_date = DATE((SELECT d FROM LatestDate), '-1 day')
                 WHERE ${whereClause}
-                GROUP BY c.id ORDER BY ${orderBy} LIMIT 100
+                GROUP BY c.id ORDER BY ${orderBy} LIMIT 300
             `;
             const { results } = await env.DB.prepare(query).bind(...bindings).all();
             return new Response(JSON.stringify(results || []), { headers: { "Content-Type": "application/json" } });
         }
 
-        // 3. 인기 동영상 API (TRENDING - 50개)
+        // 3. 인기 동영상 API
         if (url.pathname === "/api/trending") {
             const category = url.searchParams.get("category") || "all";
             const API_KEY = this.getApiKey(env);
@@ -68,14 +68,14 @@ export default {
             return new Response(JSON.stringify(results), { headers: { "Content-Type": "application/json" } });
         }
 
-        // 4. 채널 히스토리 API
+        // 4. 채널 히스토리
         if (url.pathname === "/api/channel-history") {
             const channelId = url.searchParams.get("id");
             const { results } = await env.DB.prepare(`SELECT rank_date, MAX(subs) as subs, MAX(views) as views FROM ChannelStats WHERE channel_id = ? GROUP BY rank_date ORDER BY rank_date ASC LIMIT 14`).bind(channelId).all();
             return new Response(JSON.stringify(results || []), { headers: { "Content-Type": "application/json" } });
         }
 
-        // 5. 대량 발견 및 동기화
+        // 5. 동기화
         if (url.pathname === "/mass-discover") {
             ctx.waitUntil((async () => {
                 await this.performMassDiscover(env, region);
@@ -161,7 +161,7 @@ const HTML_CONTENT = `
         <div class="max-w-6xl mx-auto flex justify-between items-center">
             <h1 class="text-2xl font-black tracking-tighter uppercase underline decoration-red-600 underline-offset-4 italic">TUBE <span class="text-red-600">TREND PRO</span></h1>
             <div class="flex items-center gap-3">
-                <select id="regionSelect" onchange="loadData()" class="bg-slate-100 border-none rounded-2xl px-4 py-2 text-xs font-bold outline-none cursor-pointer hover:bg-slate-200 transition-all">
+                <select id="regionSelect" onchange="loadData()" class="bg-slate-100 border-none rounded-2xl px-4 py-2 text-xs font-bold outline-none cursor-pointer">
                     <option value="KR" selected>🇰🇷 Korea</option><option value="US">🇺🇸 USA</option><option value="JP">🇯🇵 Japan</option>
                     <option value="IN">🇮🇳 India</option><option value="BR">🇧🇷 Brazil</option><option value="DE">🇩🇪 Germany</option><option value="FR">🇫🇷 France</option>
                 </select>
@@ -173,7 +173,7 @@ const HTML_CONTENT = `
 
     <main class="max-w-6xl mx-auto px-4 mt-10">
         <div id="syncStatus" class="hidden mb-6 p-4 bg-red-50 text-red-600 rounded-[2rem] border border-red-100 text-sm font-black text-center animate-pulse">
-            데이터 동기화가 시작되었습니다. 약 5초 후 새로고침 해주세요.
+            동기화가 시작되었습니다. 약 5초 후 새로고침 하세요.
         </div>
 
         <div class="flex gap-2 mb-8 bg-slate-100 p-1.5 rounded-[2rem] w-fit border border-slate-200 mx-auto shadow-inner">
@@ -194,13 +194,18 @@ const HTML_CONTENT = `
                     <button onclick="changeSort('views')" id="tab-views" class="px-6 py-2 rounded-2xl text-xs font-black transition-all text-slate-400">VIEWS</button>
                 </div>
             </div>
-            <div class="bg-white rounded-[2.5rem] border border-slate-100 shadow-2xl overflow-x-auto">
-                <table class="w-full text-left min-w-[850px]">
-                    <thead class="bg-slate-50 border-b text-slate-400 font-black text-[10px] uppercase tracking-widest">
-                        <tr><th class="p-6 text-center w-24">Rank</th><th class="p-6">Channel</th><th class="p-6 text-right">Subs</th><th class="p-6 text-right">Total Views</th><th id="growth-header" class="p-6 text-right">24h Growth</th></tr>
-                    </thead>
-                    <tbody id="table-body" class="divide-y divide-slate-50"></tbody>
-                </table>
+            <div class="bg-white rounded-[2.5rem] border border-slate-100 shadow-2xl overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left min-w-[850px]">
+                        <thead class="bg-slate-50 border-b text-slate-400 font-black text-[10px] uppercase tracking-widest">
+                            <tr><th class="p-6 text-center w-24">Rank</th><th class="p-6">Channel</th><th class="p-6 text-right">Subs</th><th class="p-6 text-right">Total Views</th><th id="growth-header" class="p-6 text-right">24h Growth</th></tr>
+                        </thead>
+                        <tbody id="table-body" class="divide-y divide-slate-50"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div id="load-more-container" class="mt-10 flex justify-center hidden">
+                <button onclick="loadMoreRanking()" class="px-10 py-4 bg-white border-2 border-slate-100 text-slate-900 rounded-[2rem] font-black text-sm hover:border-red-600 hover:text-red-600 transition-all shadow-xl active:scale-95">더보기 (VIEW MORE)</button>
             </div>
         </div>
 
@@ -221,7 +226,7 @@ const HTML_CONTENT = `
                     <img id="mThumb" class="w-24 h-24 rounded-[2.5rem] shadow-2xl border-4 border-white object-cover">
                     <div class="flex-1">
                         <h3 id="mTitle" class="text-2xl font-black text-slate-900 leading-tight mb-3">Channel</h3>
-                        <a id="mChannelLink" target="_blank" class="bg-red-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase shadow-lg shadow-red-100 hover:bg-red-700 transition-all">Visit Channel</a>
+                        <a id="mChannelLink" target="_blank" class="bg-red-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase shadow-lg">Visit Channel</a>
                     </div>
                 </div>
             </div>
@@ -253,6 +258,7 @@ const HTML_CONTENT = `
 
     <script>
         let currentTab = 'ranking', currentSort = 'growth', currentCategory = 'all', currentRankData = [], chart = null, historyData = [], currentChartType = 'subs', searchTimer;
+        let visibleCount = 100; // 더보기 제어 변수
         const categoryMap = {"1":"Film & Animation","2":"Autos & Vehicles","10":"Music","15":"Pets & Animals","17":"Sports","19":"Travel & Events","20":"Gaming","22":"People & Blogs","23":"Comedy","24":"Entertainment","25":"News & Politics","26":"Howto & Style","27":"Education","28":"Science & Tech","29":"Nonprofits"};
 
         function formatNum(n) {
@@ -285,15 +291,20 @@ const HTML_CONTENT = `
             try {
                 const res = await fetch(endpoint);
                 const data = await res.json();
-                if (currentTab === 'ranking') { currentRankData = data; renderRanking(data); }
+                if (currentTab === 'ranking') { 
+                    currentRankData = data; 
+                    visibleCount = 100; // 탭 변경 시 리셋
+                    renderRanking(); 
+                }
                 else if (currentTab === 'live') renderLive(data);
                 else renderTrending(data);
             } catch (e) { console.error(e); }
         }
 
-        function renderRanking(data) {
+        function renderRanking() {
+            const dataToShow = currentRankData.slice(0, visibleCount);
             document.getElementById('growth-header').innerText = currentSort === 'views' ? 'View Growth' : '24h Growth';
-            document.getElementById('table-body').innerHTML = data.map((item, idx) => \`
+            document.getElementById('table-body').innerHTML = dataToShow.map((item, idx) => \`
                 <tr onclick="openModal('\${item.id}', '\${item.title.replace(/'/g, "")}', '\${item.thumbnail}', \${item.current_subs}, \${item.current_views}, \${currentSort === 'views' ? item.views_growth : item.growth})" class="group hover:bg-slate-50 transition-all cursor-pointer border-b">
                     <td class="p-6 text-center text-xl font-black text-slate-200 group-hover:text-red-600">\${idx + 1}</td>
                     <td class="p-6 flex items-center gap-5">
@@ -304,6 +315,16 @@ const HTML_CONTENT = `
                     <td class="p-6 text-right font-mono font-bold text-slate-400">\${formatNum(item.current_views)}</td>
                     <td class="p-6 text-right text-emerald-600 font-black text-lg">+\${formatNum(currentSort === 'views' ? item.views_growth : item.growth)}</td>
                 </tr>\`).join('');
+
+            // 더보기 버튼 표시 여부
+            const btnContainer = document.getElementById('load-more-container');
+            if (currentRankData.length > visibleCount) btnContainer.classList.remove('hidden');
+            else btnContainer.classList.add('hidden');
+        }
+
+        function loadMoreRanking() {
+            visibleCount += 100;
+            renderRanking();
         }
 
         function renderLive(data) {
@@ -311,7 +332,7 @@ const HTML_CONTENT = `
                 <div class="bg-white rounded-[2rem] p-3 shadow-sm border border-slate-100 hover:shadow-2xl transition-all cursor-pointer group" onclick="window.open('https://youtube.com/watch?v=\${d.video_id}')">
                     <div class="relative mb-4 overflow-hidden rounded-[1.5rem] h-32 shadow-inner">
                         <img src="\${d.thumbnail}" class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500">
-                        <div class="absolute top-3 left-3 bg-red-600 text-white px-2 py-1 rounded-lg text-[8px] font-black flex items-center gap-1 shadow-lg"><span class="w-1.5 h-1.5 bg-white rounded-full live-dot"></span> LIVE</div>
+                        <div class="absolute top-3 left-3 bg-red-600 text-white px-2 py-1 rounded-lg text-[8px] font-black flex items-center gap-1 shadow-lg shadow-red-200"><span class="w-1.5 h-1.5 bg-white rounded-full live-dot"></span> LIVE</div>
                     </div>
                     <div class="mb-2"><span class="text-[10px] font-black text-red-600 bg-red-50 px-2 py-1 rounded-lg leading-none">\${d.viewers.toLocaleString()}명 시청 중</span></div>
                     <h4 class="font-black text-slate-900 line-clamp-1 text-xs mb-1 group-hover:text-red-600 leading-tight">\${d.video_title}</h4>
