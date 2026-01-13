@@ -1,0 +1,8 @@
+name = "tube-trend-pro"
+main = "src/index.js"
+compatibility_date = "2026-01-12"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tube-db"
+database_id = "local-testing"
