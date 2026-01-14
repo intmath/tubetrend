@@ -29,3 +29,11 @@ CREATE TABLE IF NOT EXISTS LiveRankings (
     video_id TEXT,
     region TEXT
 );
+
+-- 4. 실시간 방송 채널 누적 테이블 (Accumulate)
+CREATE TABLE IF NOT EXISTS LiveStreamers (
+    channel_id TEXT PRIMARY KEY,
+    title TEXT,
+    thumbnail TEXT,
+    last_live_date TEXT
+);
