@@ -1,8 +1,35 @@
 export default {
-    getApiKey(env) {
-        if (!env.YOUTUBE_API_KEYS) return null;
-        const keys = env.YOUTUBE_API_KEYS.split(',');
-        return keys[Math.floor(Math.random() * keys.length)].trim();
+    getApiKeys(env) {
+        if (!env.YOUTUBE_API_KEYS) return [];
+        return env.YOUTUBE_API_KEYS.split(',').map(key => key.trim());
+    },
+
+    async fetchWithFallback(url, env) {
+        const keys = this.getApiKeys(env);
+        if (keys.length === 0) throw new Error("No API Keys found");
+
+        let lastErrorData = null;
+        // Start from the first key (Sequential Fallback)
+
+        for (let i = 0; i < keys.length; i++) {
+            const currentKey = keys[i];
+            const separator = url.includes('?') ? '&' : '?';
+            const fullUrl = `${url}${separator}key=${currentKey}`;
+            const res = await fetch(fullUrl);
+
+            if (res.ok) return res;
+
+            if (res.status === 403) {
+                const data = await res.clone().json();
+                if (data.error?.errors?.some(e => e.reason === 'quotaExceeded')) {
+                    console.log(`Key ${currentKey.slice(0, 5)}... quota exceeded. Rotated to next key.`);
+                    lastErrorData = data;
+                    continue;
+                }
+            }
+            return res;
+        }
+        return new Response(JSON.stringify(lastErrorData || { error: "All keys quota exceeded" }), { status: 403 });
     },
 
     getKSTDate(offsetDays = 0) {
@@ -53,13 +80,12 @@ export default {
         // 3. TOP 300 일괄 수집 (백그라운드)
         if (url.pathname === "/api/batch-collect") {
             ctx.waitUntil((async () => {
-                const API_KEY = this.getApiKey(env);
                 const today = this.getKSTDate();
                 let allIds = [];
                 let nextToken = "";
                 for (let i = 0; i < 6; i++) {
-                    const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&regionCode=${region}&order=viewCount&maxResults=50&pageToken=${nextToken}&key=${API_KEY}`;
-                    const res = await fetch(searchUrl);
+                    const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&regionCode=${region}&order=viewCount&maxResults=50&pageToken=${nextToken}`;
+                    const res = await this.fetchWithFallback(searchUrl, env);
                     const data = await res.json();
                     if (data.items) allIds.push(...data.items.map(item => item.id.channelId));
                     nextToken = data.nextPageToken;
@@ -68,7 +94,7 @@ export default {
                 if (allIds.length > 0) {
                     for (let i = 0; i < allIds.length; i += 50) {
                         const batchIds = allIds.slice(i, i + 50).join(',');
-                        const vRes = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=statistics,snippet&id=${batchIds}&key=${API_KEY}`);
+                        const vRes = await this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/channels?part=statistics,snippet&id=${batchIds}`, env);
                         const vData = await vRes.json();
                         if (vData.items) {
                             let stmts = vData.items.map(item => [
@@ -96,12 +122,11 @@ export default {
         // 5. 채널 개별 등록 API (핸들 지원)
         if (url.pathname === "/api/add-channel") {
             const inputId = url.searchParams.get("id");
-            const API_KEY = this.getApiKey(env);
             let channelUrl = inputId.startsWith('@') ?
-                `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&forHandle=${encodeURIComponent(inputId)}&key=${API_KEY}` :
-                `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${inputId}&key=${API_KEY}`;
+                `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&forHandle=${encodeURIComponent(inputId)}` :
+                `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${inputId}`;
 
-            const res = await fetch(channelUrl);
+            const res = await this.fetchWithFallback(channelUrl, env);
             const data = await res.json();
             if (!data.items || data.items.length === 0) return new Response(JSON.stringify({ success: false, error: "Not found" }), { status: 404 });
 
@@ -119,10 +144,9 @@ export default {
             const newCountry = url.searchParams.get("country");
             if (!inputId || !newCountry) return new Response(JSON.stringify({ success: false, error: "Missing parameters" }), { status: 400 });
 
-            const API_KEY = this.getApiKey(env);
             let targetId = inputId;
             if (inputId.startsWith('@')) {
-                const res = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=id&forHandle=${encodeURIComponent(inputId)}&key=${API_KEY}`);
+                const res = await this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/channels?part=id&forHandle=${encodeURIComponent(inputId)}`, env);
                 const data = await res.json();
                 if (!data.items || data.items.length === 0) return new Response(JSON.stringify({ success: false, error: "Invalid Handle" }), { status: 404 });
                 targetId = data.items[0].id;
@@ -135,7 +159,8 @@ export default {
 
         if (url.pathname === "/api/trending") {
             const category = url.searchParams.get("category") || "all";
-            const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&chart=mostPopular&regionCode=${region}&videoCategoryId=${category === 'all' ? '0' : category}&maxResults=50&key=${this.getApiKey(env)}`);
+            const catParam = category === 'all' ? '' : `&videoCategoryId=${category}`;
+            const res = await this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&chart=mostPopular&regionCode=${region}${catParam}&maxResults=50`, env);
             const data = await res.json();
             return new Response(JSON.stringify(data.items?.map(item => ({ id: item.id, title: item.snippet.title, channel: item.snippet.channelTitle, thumbnail: item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default.url, views: item.statistics.viewCount, date: item.snippet.publishedAt.slice(0, 10) })) || []), { headers: { "Content-Type": "application/json" } });
         }
@@ -150,12 +175,11 @@ export default {
     },
 
     async syncLiveStreams(env, region) {
-        const API_KEY = this.getApiKey(env);
-        const res = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&eventType=live&regionCode=${region}&q=${encodeURIComponent(region === 'KR' ? '라이브' : 'live')}&maxResults=25&key=${API_KEY}`);
+        const res = await this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&eventType=live&regionCode=${region}&q=${encodeURIComponent(region === 'KR' ? '라이브' : 'live')}&maxResults=25`, env);
         const data = await res.json();
         if (data.items) {
             const videoIds = data.items.map(i => i.id.videoId).join(',');
-            const vRes = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails,snippet&id=${videoIds}&key=${API_KEY}`);
+            const vRes = await this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails,snippet&id=${videoIds}`, env);
             const vData = await vRes.json();
             await env.DB.prepare("DELETE FROM LiveRankings WHERE region = ?").bind(region).run();
             const stmts = vData.items.map(item => env.DB.prepare(`INSERT INTO LiveRankings (channel_name, video_title, viewers, thumbnail, video_id, region) VALUES (?, ?, ?, ?, ?, ?)`).bind(item.snippet.channelTitle, item.snippet.title, parseInt(item.liveStreamingDetails?.concurrentViewers || 0), item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default.url, item.id, region));
@@ -164,9 +188,8 @@ export default {
     },
 
     async performMassDiscover(env, region) {
-        const API_KEY = this.getApiKey(env);
         const categories = ["1", "2", "10", "15", "17", "19", "20", "22", "23", "24", "25", "26", "27", "28", "29"];
-        const promises = categories.map(catId => fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet&chart=mostPopular&regionCode=${region}&videoCategoryId=${catId}&maxResults=50&key=${API_KEY}`).then(res => res.json()));
+        const promises = categories.map(catId => this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/videos?part=snippet&chart=mostPopular&regionCode=${region}&videoCategoryId=${catId}&maxResults=50`, env).then(res => res.json()));
         const results = await Promise.all(promises);
         let allStmts = [];
         results.forEach(data => {
@@ -183,7 +206,7 @@ export default {
         const today = this.getKSTDate();
         for (let i = 0; i < results.length; i += 50) {
             const ids = results.slice(i, i + 50).map(c => c.id).join(',');
-            const res = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=statistics,snippet&id=${ids}&key=${this.getApiKey(env)}`);
+            const res = await this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/channels?part=statistics,snippet&id=${ids}`, env);
             const data = await res.json();
             if (data.items) {
                 const stmts = data.items.flatMap(item => [
