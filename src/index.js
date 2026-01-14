@@ -113,6 +113,26 @@ export default {
             return new Response(JSON.stringify({ success: true, title: item.snippet.title }));
         }
 
+        // 6. 국가 강제 지정 (Override)
+        if (url.pathname === "/api/force-country") {
+            const inputId = url.searchParams.get("id");
+            const newCountry = url.searchParams.get("country");
+            if (!inputId || !newCountry) return new Response(JSON.stringify({ success: false, error: "Missing parameters" }), { status: 400 });
+
+            const API_KEY = this.getApiKey(env);
+            let targetId = inputId;
+            if (inputId.startsWith('@')) {
+                const res = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=id&forHandle=${encodeURIComponent(inputId)}&key=${API_KEY}`);
+                const data = await res.json();
+                if (!data.items || data.items.length === 0) return new Response(JSON.stringify({ success: false, error: "Invalid Handle" }), { status: 404 });
+                targetId = data.items[0].id;
+            }
+
+            const { meta } = await env.DB.prepare("UPDATE Channels SET country = ? WHERE id = ?").bind(newCountry, targetId).run();
+            if (meta.changes === 0) return new Response(JSON.stringify({ success: false, error: "Channel not found in DB" }), { status: 404 });
+            return new Response(JSON.stringify({ success: true, id: targetId, country: newCountry }));
+        }
+
         if (url.pathname === "/api/trending") {
             const category = url.searchParams.get("category") || "all";
             const res = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&chart=mostPopular&regionCode=${region}&videoCategoryId=${category === 'all' ? '0' : category}&maxResults=50&key=${this.getApiKey(env)}`);
@@ -206,6 +226,8 @@ const HTML_CONTENT = `
                 <button onclick="batchCollect()" id="batchBtn" class="bg-indigo-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg active:scale-95">TOP 300 수집</button>
                 <button onclick="downloadCSV()" class="bg-emerald-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">CSV</button>
                 <button onclick="updateSystem()" id="syncBtn" class="bg-slate-900 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">SYNC</button>
+                <button onclick="openAddModal()" class="bg-violet-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg active:scale-95">ADD CHANNEL</button>
+                <button onclick="openOverrideModal()" class="bg-red-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">OVERRIDE</button>
             </div>
         </div>
     </nav>
@@ -225,10 +247,7 @@ const HTML_CONTENT = `
             <button onclick="changeCategory('all')" id="cat-all" class="px-5 py-2.5 rounded-2xl text-[11px] font-black bg-slate-900 text-white shadow-md">ALL TOPICS</button>
         </div>
 
-        <div id="add-tool" class="max-w-4xl mx-auto mb-10 p-1 bg-white border-2 border-slate-100 rounded-[2rem] flex items-center shadow-sm">
-            <input type="text" id="addChannelId" placeholder="채널 ID(UC...) 또는 핸들(@) 입력" class="flex-1 px-6 py-3 bg-transparent outline-none font-bold text-sm">
-            <button onclick="addNewChannel()" class="bg-slate-900 text-white px-8 py-3 rounded-[1.5rem] text-xs font-black hover:bg-red-600 transition-all">등록</button>
-        </div>
+
 
         <div id="section-ranking" class="block">
             <div class="flex flex-col md:flex-row justify-between gap-4 mb-8">
@@ -277,8 +296,43 @@ const HTML_CONTENT = `
                 <div class="rounded-3xl border border-slate-100 p-5"><div class="h-60 w-full"><canvas id="hChart"></canvas></div></div>
             </div>
         </div>
+        </div>
     </div>
 
+    <div id="addModal" class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4">
+        <div class="bg-white w-full max-w-lg rounded-[2.5rem] p-8 shadow-2xl modal-animate relative">
+            <button onclick="document.getElementById('addModal').classList.add('hidden')" class="absolute top-6 right-8 text-2xl text-slate-400 hover:text-red-600">&times;</button>
+            <h3 class="text-xl font-black text-slate-900 mb-6">📺 ADD NEW CHANNEL</h3>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-xs font-bold text-slate-500 mb-1">CHANNEL ID / HANDLE</label>
+                    <input type="text" id="newChannelInput" placeholder="@handle or UC..." class="w-full p-4 rounded-2xl bg-slate-50 border border-slate-200 font-bold text-sm">
+                </div>
+                <button onclick="addNewChannel()" class="w-full py-4 bg-slate-900 text-white rounded-2xl font-black hover:bg-violet-600 transition-all shadow-lg mt-2">REGISTER CHANNEL</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="overrideModal" class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4">
+        <div class="bg-white w-full max-w-lg rounded-[2.5rem] p-8 shadow-2xl modal-animate relative">
+            <button onclick="document.getElementById('overrideModal').classList.add('hidden')" class="absolute top-6 right-8 text-2xl text-slate-400 hover:text-red-600">&times;</button>
+            <h3 class="text-xl font-black text-slate-900 mb-6">🌏 FORCE COUNTRY OVERRIDE</h3>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-xs font-bold text-slate-500 mb-1">CHANNEL ID / HANDLE</label>
+                    <input type="text" id="ovInputId" placeholder="@handle or UC..." class="w-full p-4 rounded-2xl bg-slate-50 border border-slate-200 font-bold text-sm">
+                </div>
+                <div>
+                     <label class="block text-xs font-bold text-slate-500 mb-1">NEW COUNTRY</label>
+                     <select id="ovSelectRegion" class="w-full p-4 rounded-2xl bg-slate-50 border border-slate-200 font-bold text-sm">
+                        <option value="KR">🇰🇷 Korea</option><option value="US">🇺🇸 USA</option><option value="JP">🇯🇵 Japan</option>
+                        <option value="IN">🇮🇳 India</option><option value="BR">🇧🇷 Brazil</option><option value="DE">🇩🇪 Germany</option><option value="FR">🇫🇷 France</option>
+                     </select>
+                </div>
+                <button onclick="submitOverride()" class="w-full py-4 bg-slate-900 text-white rounded-2xl font-black hover:bg-red-600 transition-all shadow-lg mt-2">CONFIRM UPDATE</button>
+            </div>
+        </div>
+    </div>
     <script>
         let currentTab = 'ranking', currentSort = 'subs', currentCategory = 'all', currentRankData = [], chart = null, historyData = [], currentChartType = 'subs', searchTimer, visibleCount = 100;
         const categoryMap = {"1":"Film & Animation","2":"Autos & Vehicles","10":"Music","15":"Pets & Animals","17":"Sports","19":"Travel & Events","20":"Gaming","22":"People & Blogs","23":"Comedy","24":"Entertainment","25":"News & Politics","26":"Howto & Style","27":"Education","28":"Science & Tech","29":"Nonprofits"};
@@ -293,7 +347,6 @@ const HTML_CONTENT = `
             ['section-ranking', 'section-live', 'section-trending'].forEach(id => document.getElementById(id).style.display = 'none');
             document.getElementById('section-' + t).style.display = 'block';
             document.getElementById('cat-list').style.display = t === 'live' ? 'none' : 'flex';
-            document.getElementById('add-tool').style.display = t === 'ranking' ? 'flex' : 'none';
             loadData();
         }
 
@@ -333,8 +386,19 @@ const HTML_CONTENT = `
         function renderChart() { const ctx = document.getElementById('hChart').getContext('2d'); if (chart) chart.destroy(); const isSubs = currentChartType === 'subs'; const color = isSubs ? '#dc2626' : '#2563eb'; chart = new Chart(ctx, { type: 'line', data: { labels: historyData.map(d => d.rank_date.slice(5)), datasets: [{ data: historyData.map(d => isSubs ? d.subs : d.views), borderColor: color, backgroundColor: isSubs ? 'rgba(220, 38, 38, 0.1)' : 'rgba(37, 99, 235, 0.1)', borderWidth: 4, tension: 0.4, fill: true, pointRadius: 4, pointBackgroundColor: color }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { border: { display: false }, grid: { color: '#f1f5f9' }, ticks: { callback: v => formatNum(v), font: { size: 9, weight: 'bold' } } }, x: { border: { display: false }, grid: { display: false }, ticks: { font: { size: 9, weight: 'bold' } } } } } }); }
         async function updateSystem() { const btn = document.getElementById('syncBtn'); btn.disabled = true; document.getElementById('syncStatus').classList.remove('hidden'); await fetch('/mass-discover?region=' + document.getElementById('regionSelect').value); setTimeout(() => { btn.disabled = false; document.getElementById('syncStatus').classList.add('hidden'); loadData(); }, 3000); }
         async function batchCollect() { const btn = document.getElementById('batchBtn'); btn.disabled = true; document.getElementById('syncStatus').classList.remove('hidden'); await fetch('/api/batch-collect?region=' + document.getElementById('regionSelect').value); setTimeout(() => { btn.disabled = false; document.getElementById('syncStatus').classList.add('hidden'); loadData(); }, 3000); }
-        async function addNewChannel() { const idInput = document.getElementById('addChannelId'); const id = idInput.value.trim(); if (!id) return alert("ID 입력 필요"); const res = await fetch(\`/api/add-channel?id=\${encodeURIComponent(id)}&region=\${document.getElementById('regionSelect').value}\`); const data = await res.json(); if (data.success) { alert(\`[\${data.title}] 등록 완료!\`); idInput.value = ""; loadData(); } else alert("실패: " + (data.error || "형식 확인")); }
+        async function addNewChannel() { const idInput = document.getElementById('newChannelInput'); const id = idInput.value.trim(); if (!id) return alert("ID 입력 필요"); const res = await fetch(\`/api/add-channel?id=\${encodeURIComponent(id)}&region=\${document.getElementById('regionSelect').value}\`); const data = await res.json(); if (data.success) { alert(\`[\${data.title}] 등록 완료!\`); idInput.value = ""; document.getElementById('addModal').classList.add('hidden'); loadData(); } else alert("실패: " + (data.error || "형식 확인")); }
         function closeModal() { document.getElementById('modal').classList.add('hidden'); if(chart) chart.destroy(); }
+        function openAddModal() { document.getElementById('addModal').classList.remove('hidden'); }
+        function openOverrideModal() { document.getElementById('overrideModal').classList.remove('hidden'); }
+        async function submitOverride() {
+            const id = document.getElementById('ovInputId').value.trim();
+            const country = document.getElementById('ovSelectRegion').value;
+            if (!id) return alert("Please enter ID");
+            const res = await fetch("/api/force-country?id=" + encodeURIComponent(id) + "&country=" + country);
+            const data = await res.json();
+            if (data.success) { alert("Success! Country updated."); document.getElementById('overrideModal').classList.add('hidden'); document.getElementById('ovInputId').value = ""; loadData(); }
+            else { alert("Error: " + data.error); }
+        }
         function changeSort(s) { currentSort = s; document.getElementById('tab-subs').className = s === 'subs' ? 'px-6 py-2 rounded-2xl text-xs font-black transition-all tab-active' : 'px-6 py-2 rounded-2xl text-xs font-black transition-all text-slate-400'; document.getElementById('tab-views').className = s === 'views' ? 'px-6 py-2 rounded-2xl text-xs font-black transition-all tab-active' : 'px-6 py-2 rounded-2xl text-xs font-black transition-all text-slate-400'; loadData(); }
         function changeCategory(c) { currentCategory = c; document.querySelectorAll('#cat-list button').forEach(b => b.className = "px-5 py-2.5 rounded-2xl text-[11px] font-black bg-white text-slate-400 border border-slate-100 hover:bg-slate-50"); const activeId = c === 'all' ? 'cat-all' : 'cat-' + c; if(document.getElementById(activeId)) document.getElementById(activeId).className = "px-5 py-2.5 rounded-2xl text-[11px] font-black bg-slate-900 text-white shadow-md"; loadData(); }
         function debounceSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(loadData, 300); }
