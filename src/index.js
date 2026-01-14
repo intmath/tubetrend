@@ -60,6 +60,7 @@ export default {
             const orderByColumn = sort === "views" ? "MAX(t.views)" : "MAX(t.subs)";
             const query = `
                 WITH LatestDate AS (SELECT MAX(rank_date) as d FROM ChannelStats),
+                PrevDate AS (SELECT MAX(rank_date) as pd FROM ChannelStats WHERE rank_date < (SELECT d FROM LatestDate)),
                 RankedData AS (
                     SELECT c.id, c.title, c.category, c.country, c.thumbnail, 
                            MAX(t.subs) AS current_subs, MAX(t.views) AS current_views,
@@ -67,7 +68,7 @@ export default {
                            ROW_NUMBER() OVER (ORDER BY ${orderByColumn} DESC) as absolute_rank
                     FROM Channels c
                     JOIN ChannelStats t ON c.id = t.channel_id AND t.rank_date = (SELECT d FROM LatestDate)
-                    LEFT JOIN ChannelStats y ON c.id = y.channel_id AND y.rank_date = DATE((SELECT d FROM LatestDate), '-1 day')
+                    LEFT JOIN ChannelStats y ON c.id = y.channel_id AND y.rank_date = (SELECT pd FROM PrevDate)
                     WHERE ${filterConditions.join(" AND ")}
                     GROUP BY c.id
                 )
@@ -164,9 +165,19 @@ export default {
         if (url.pathname === "/api/trending") {
             const category = url.searchParams.get("category") || "all";
             const catParam = category === 'all' ? '' : `&videoCategoryId=${category}`;
-            const res = await this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&chart=mostPopular&regionCode=${region}${catParam}&maxResults=50`, env);
-            const data = await res.json();
-            return new Response(JSON.stringify(data.items?.map(item => ({ id: item.id, title: item.snippet.title, channel: item.snippet.channelTitle, thumbnail: item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default.url, views: item.statistics.viewCount, date: item.snippet.publishedAt.slice(0, 10) })) || []), { headers: { "Content-Type": "application/json" } });
+            let allItems = [];
+            let nextToken = "";
+            for (let i = 0; i < 2; i++) {
+                const searchUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&chart=mostPopular&regionCode=${region}${catParam}&maxResults=50&pageToken=${nextToken}`;
+                try {
+                    const res = await this.fetchWithFallback(searchUrl, env);
+                    const data = await res.json();
+                    if (data.items) allItems.push(...data.items);
+                    nextToken = data.nextPageToken;
+                    if (!nextToken) break;
+                } catch (e) { break; }
+            }
+            return new Response(JSON.stringify(allItems.map(item => ({ id: item.id, title: item.snippet.title, channel: item.snippet.channelTitle, thumbnail: item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default.url, views: item.statistics.viewCount, date: item.snippet.publishedAt.slice(0, 10) }))), { headers: { "Content-Type": "application/json" } });
         }
 
         if (url.pathname === "/api/channel-history") {
@@ -502,9 +513,9 @@ const HTML_CONTENT = `
                     <td class="p-6 flex items-center gap-5">
                         <img src="\${item.thumbnail}" class="w-12 h-12 rounded-2xl shadow-sm object-cover"><div class="font-black text-slate-900 group-hover:text-red-600">\${item.title}</div>
                     </td>
-                    <td class="p-6 text-right font-mono font-black text-slate-900">\${formatNum(item.current_subs)}</td>
-                    <td class="p-6 text-right font-mono font-bold text-slate-400">\${formatNum(item.current_views)}</td>
-                    <td class="p-6 text-right text-emerald-600 font-black text-lg">+\${formatNum(item.growth)}</td>
+                    <td class="p-6 text-right font-mono font-black text-slate-900">\${item.current_subs.toLocaleString()}</td>
+                    <td class="p-6 text-right font-mono font-bold text-slate-400">\${item.current_views.toLocaleString()}</td>
+                    <td class="p-6 text-right text-emerald-600 font-black text-lg">\${item.growth > 0 ? '+' : ''}\${item.growth.toLocaleString()}</td>
                 </tr>\`).join('');
             document.getElementById('load-more-container').classList.toggle('hidden', currentRankData.length <= visibleCount);
         }
