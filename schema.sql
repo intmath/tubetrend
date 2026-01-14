@@ -35,5 +35,6 @@ CREATE TABLE IF NOT EXISTS LiveStreamers (
     channel_id TEXT PRIMARY KEY,
     title TEXT,
     thumbnail TEXT,
-    last_live_date TEXT
+    last_live_date TEXT,
+    region TEXT
 );
