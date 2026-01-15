@@ -150,6 +150,7 @@ export default {
                     (async () => {
                         await this.performMassDiscover(env, region);
                         await this.handleDailySync(env);
+                        await this.syncAllTrends(env, region); // Renamed to syncAllTrends
                     })()
                 ]);
             })());
@@ -202,43 +203,70 @@ export default {
             return new Response(JSON.stringify({ success: true, id: targetId, country: newCountry }));
         }
 
+        // 7. DB HARD RESET (Reset to default_channels.js)
+        if (url.pathname === "/api/reset-db") {
+            try {
+                // Wipe All Tables (Order Matters for Foreign Keys!)
+                await env.DB.batch([
+                    env.DB.prepare("DELETE FROM ChannelStats"),
+                    env.DB.prepare("DELETE FROM LiveRankings"),
+                    env.DB.prepare("DELETE FROM LiveStreamers"),
+                    env.DB.prepare("DELETE FROM ShortsCache"),
+                    env.DB.prepare("DELETE FROM Channels")
+                ]);
+
+                // Restore Defaults
+                await this.restoreDefaults(env, region);
+
+                return new Response(JSON.stringify({ success: true }));
+            } catch (e) {
+                return new Response(JSON.stringify({ success: false, error: e.message }));
+            }
+        }
+
         if (url.pathname === "/api/trending") {
+            const region = url.searchParams.get("region") || "US";
             const category = url.searchParams.get("category") || "all";
-            const catParam = category === 'all' ? '' : `&videoCategoryId=${category}`;
-            let allItems = [];
-            let nextToken = "";
 
-            // 1. Fetch more depth (4 pages = ~200 items)
-            for (let i = 0; i < 4; i++) {
-                const searchUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&chart=mostPopular&regionCode=${region}${catParam}&maxResults=50&pageToken=${nextToken}`;
-                try {
-                    const res = await this.fetchWithFallback(searchUrl, env);
-                    const data = await res.json();
-                    if (data.items) allItems.push(...data.items);
-                    nextToken = data.nextPageToken;
-                    if (!nextToken) break;
-                } catch (e) { break; }
-            }
+            try {
+                // ALWAYS Read from Cache
+                const { results } = await env.DB.prepare("SELECT data FROM ShortsCache WHERE type = 'regular' AND region = ? ORDER BY rank ASC").bind(region).all();
 
-            // 3. Auto-Save Channels (Background)
-            // Use video thumbnail as temporary channel thumbnail; DailySync will fix it later.
-            if (allItems.length > 0) {
-                const uniqueChannels = new Map();
-                allItems.forEach(item => {
-                    if (!uniqueChannels.has(item.snippet.channelId)) {
-                        uniqueChannels.set(item.snippet.channelId, item);
+                let items = [];
+                if (results && results.length > 0) {
+                    items = results.map(r => JSON.parse(r.data));
+
+                    // Client-side Filtering (Backend)
+                    if (category !== 'all') {
+                        items = items.filter(i => i.categoryId === category);
                     }
-                });
+                }
 
-                const stmts = Array.from(uniqueChannels.values()).map(item =>
-                    env.DB.prepare(`INSERT INTO Channels (id, title, country, category, thumbnail) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`)
-                        .bind(item.snippet.channelId, item.snippet.channelTitle, region, item.snippet.categoryId || "0", item.snippet.thumbnails.default.url)
-                );
-                // We use ctx.waitUntil if available, effectively fire-and-forget for the user request
-                if (stmts.length > 0) ctx.waitUntil(env.DB.batch(stmts));
+                return new Response(JSON.stringify(items), { headers: { "Content-Type": "application/json" } });
+
+            } catch (e) {
+                return new Response(JSON.stringify([]), { headers: { "Content-Type": "application/json" } });
             }
+        }
 
-            return new Response(JSON.stringify(allItems.map(item => ({ id: item.id, title: item.snippet.title, channel: item.snippet.channelTitle, thumbnail: item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default.url, views: item.statistics.viewCount, date: item.snippet.publishedAt.slice(0, 10) }))), { headers: { "Content-Type": "application/json" } });
+        if (url.pathname === "/api/shorts-viral") {
+            const region = url.searchParams.get("region") || "KR";
+            try {
+                const { results } = await env.DB.prepare("SELECT data FROM ShortsCache WHERE type = 'viral' AND region = ? ORDER BY rank ASC").bind(region).all();
+                return new Response(JSON.stringify(results.map(r => JSON.parse(r.data))), { headers: { "Content-Type": "application/json" } });
+            } catch (e) {
+                return new Response(JSON.stringify([]), { headers: { "Content-Type": "application/json" } });
+            }
+        }
+
+        if (url.pathname === "/api/shorts-trending") {
+            const region = url.searchParams.get("region") || "KR";
+            try {
+                const { results } = await env.DB.prepare("SELECT data FROM ShortsCache WHERE type = 'trending' AND region = ? ORDER BY rank ASC").bind(region).all();
+                return new Response(JSON.stringify(results.map(r => JSON.parse(r.data))), { headers: { "Content-Type": "application/json" } });
+            } catch (e) {
+                return new Response(JSON.stringify([]), { headers: { "Content-Type": "application/json" } });
+            }
         }
 
         if (url.pathname === "/api/channel-history") {
@@ -394,7 +422,7 @@ export default {
         let allStmts = [];
         results.forEach(data => {
             if (data.items) {
-                const stmts = data.items.map(item => env.DB.prepare(`INSERT INTO Channels (id, title, country, category, thumbnail) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET country = excluded.country`).bind(item.snippet.channelId, item.snippet.channelTitle, region, item.snippet.categoryId || "0", item.snippet.thumbnails.default.url));
+                const stmts = data.items.map(item => env.DB.prepare(`INSERT INTO Channels (id, title, country, category, thumbnail) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET title=excluded.title`).bind(item.snippet.channelId, item.snippet.channelTitle, region, item.snippet.categoryId || "0", item.snippet.thumbnails.default.url));
                 allStmts.push(...stmts);
             }
         });
@@ -413,7 +441,9 @@ export default {
                 const data = await res.json();
                 if (data.items) {
                     const stmts = data.items.flatMap(item => [
-                        env.DB.prepare(`UPDATE Channels SET thumbnail = ? WHERE id = ?`).bind(item.snippet.thumbnails.default.url, item.id),
+                        // SELF-CORRECTION: Always update country from API if available
+                        item.snippet.country ? env.DB.prepare(`UPDATE Channels SET thumbnail = ?, country = ? WHERE id = ?`).bind(item.snippet.thumbnails.default.url, item.snippet.country, item.id)
+                            : env.DB.prepare(`UPDATE Channels SET thumbnail = ? WHERE id = ?`).bind(item.snippet.thumbnails.default.url, item.id),
                         env.DB.prepare(`INSERT OR REPLACE INTO ChannelStats (channel_id, subs, views, rank_date) VALUES (?, ?, ?, ?)`).bind(item.id, parseInt(item.statistics.subscriberCount || 0), parseInt(item.statistics.viewCount || 0), today)
                     ]);
                     await env.DB.batch(stmts);
@@ -421,6 +451,119 @@ export default {
             })());
         }
         await Promise.all(batchPromises);
+    },
+
+    async syncAllTrends(env, region) { // Renamed
+        try {
+            await env.DB.prepare("CREATE TABLE IF NOT EXISTS ShortsCache (video_id TEXT, type TEXT, data TEXT, region TEXT, rank INTEGER, PRIMARY KEY (video_id, type, region))").run();
+
+            // 1. Regular Trending (Videos)
+            let regularItems = [];
+            // Fetch 4 pages (~200 items)
+            let nextToken = "";
+            for (let i = 0; i < 4; i++) {
+                const searchUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&chart=mostPopular&regionCode=${region}&maxResults=50&pageToken=${nextToken}`;
+                try {
+                    const res = await this.fetchWithFallback(searchUrl, env);
+                    const data = await res.json();
+                    if (data.items) {
+                        regularItems.push(...data.items.map(item => ({
+                            id: item.id,
+                            title: item.snippet.title,
+                            channel: item.snippet.channelTitle,
+                            thumbnail: item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default.url,
+                            views: item.statistics.viewCount,
+                            date: item.snippet.publishedAt.slice(0, 10),
+                            categoryId: item.snippet.categoryId // Stored for filtering
+                        })));
+                    }
+                    nextToken = data.nextPageToken;
+                    if (!nextToken) break;
+                } catch (e) { break; }
+            }
+
+            // 2. Trending Shorts Logic
+            let trendItems = [];
+            const searchUrlT = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent('쇼츠')}&type=video&videoDuration=short&regionCode=${region}&order=viewCount&maxResults=50`;
+            const searchResT = await this.fetchWithFallback(searchUrlT, env);
+            const searchDataT = await searchResT.json();
+
+            if (searchDataT.items) {
+                const videoIds = searchDataT.items.map(item => item.id.videoId).join(',');
+                if (videoIds) {
+                    const vRes = await this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/videos?part=statistics,snippet&id=${videoIds}`, env);
+                    const vData = await vRes.json();
+                    if (vData.items) {
+                        trendItems = vData.items.filter(v => {
+                            if (region === 'KR') {
+                                const text = (v.snippet.title + " " + v.snippet.description + " " + v.snippet.channelTitle).toLowerCase();
+                                return /[ㄱ-ㅎ|ㅏ-ㅣ|가-힣]/.test(text);
+                            }
+                            return true;
+                        }).map(v => ({
+                            id: v.id, title: v.snippet.title, channel: v.snippet.channelTitle, thumbnail: v.snippet.thumbnails.high?.url || v.snippet.thumbnails.default.url, views: parseInt(v.statistics.viewCount || 0), date: v.snippet.publishedAt.slice(0, 10), vf: 0 // placeholder
+                        }));
+                        trendItems.sort((a, b) => b.views - a.views);
+                    }
+                }
+            }
+
+            // 2. Viral Shorts Logic
+            let viralItems = [];
+            const searchUrlV = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent('쇼츠')}&type=video&videoDuration=short&regionCode=${region}&order=viewCount&maxResults=50`;
+            const searchResV = await this.fetchWithFallback(searchUrlV, env);
+            const searchDataV = await searchResV.json();
+
+            if (searchDataV.items) {
+                const videoIds = searchDataV.items.map(item => item.id.videoId).join(',');
+                const channelIds = [...new Set(searchDataV.items.map(item => item.snippet.channelId))].join(',');
+
+                const [vRes, cRes] = await Promise.all([
+                    this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/videos?part=statistics,snippet&id=${videoIds}`, env),
+                    this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/channels?part=statistics,snippet&id=${channelIds}`, env)
+                ]);
+                const vData = await vRes.json();
+                const cData = await cRes.json();
+
+                if (vData.items && cData.items) {
+                    const subMap = {};
+                    cData.items.forEach(c => subMap[c.id] = parseInt(c.statistics.subscriberCount || 1));
+
+                    viralItems = vData.items.filter(v => {
+                        if (region === 'KR') {
+                            const text = (v.snippet.title + " " + v.snippet.description + " " + v.snippet.channelTitle).toLowerCase();
+                            return /[ㄱ-ㅎ|ㅏ-ㅣ|가-힣]/.test(text);
+                        }
+                        return true;
+                    }).map(v => {
+                        const views = parseInt(v.statistics.viewCount || 0);
+                        const subs = subMap[v.snippet.channelId] || 1;
+                        const vf = (views / subs);
+                        return { id: v.id, title: v.snippet.title, channel: v.snippet.channelTitle, thumbnail: v.snippet.thumbnails.high?.url || v.snippet.thumbnails.default.url, views: views, subs: subs, vf: parseFloat(vf.toFixed(2)), date: v.snippet.publishedAt.slice(0, 10) };
+                    });
+                    viralItems.sort((a, b) => b.vf - a.vf);
+                }
+            }
+
+            // 3. Save to DB
+            await env.DB.prepare("DELETE FROM ShortsCache WHERE region = ?").bind(region).run();
+
+            let stmts = [];
+            regularItems.forEach((item, idx) => {
+                stmts.push(env.DB.prepare("INSERT INTO ShortsCache (video_id, type, data, region, rank) VALUES (?, ?, ?, ?, ?)").bind(item.id, 'regular', JSON.stringify(item), region, idx));
+            });
+            trendItems.forEach((item, idx) => {
+                stmts.push(env.DB.prepare("INSERT INTO ShortsCache (video_id, type, data, region, rank) VALUES (?, ?, ?, ?, ?)").bind(item.id, 'trending', JSON.stringify(item), region, idx));
+            });
+            viralItems.forEach((item, idx) => {
+                stmts.push(env.DB.prepare("INSERT INTO ShortsCache (video_id, type, data, region, rank) VALUES (?, ?, ?, ?, ?)").bind(item.id, 'viral', JSON.stringify(item), region, idx));
+            });
+
+            if (stmts.length > 0) await env.DB.batch(stmts);
+
+        } catch (e) {
+            console.error("Trends Sync Failed", e);
+        }
     }
 };
 
@@ -459,7 +602,7 @@ const HTML_CONTENT = `
                 <button onclick="syncLive()" id="liveSyncBtn" class="bg-red-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg active:scale-95">LIVE SYNC</button>
                 <button onclick="updateSystem()" id="syncBtn" class="bg-slate-900 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">CH SYNC</button>
                 <button onclick="openAddModal()" class="bg-violet-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg active:scale-95">ADD CHANNEL</button>
-                <button onclick="openOverrideModal()" class="bg-red-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">OVERRIDE</button>
+                <button onclick="resetDB()" class="bg-red-800 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">DB RESET</button>
             </div>
         </div>
     </nav>
@@ -472,6 +615,8 @@ const HTML_CONTENT = `
         <div class="flex gap-2 mb-8 bg-slate-100 p-1.5 rounded-[2rem] w-fit border border-slate-200 mx-auto shadow-inner">
             <button onclick="switchTab('ranking')" id="btn-tab-rank" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all tab-active">CHANNEL RANK</button>
             <button onclick="switchTab('trending')" id="btn-tab-trend" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600">TRENDING</button>
+            <button onclick="switchTab('shorts')" id="btn-tab-shorts" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600">SHORTS</button>
+            <button onclick="switchTab('viral')" id="btn-tab-viral" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600">HOT SHORTS</button>
             <button onclick="switchTab('live')" id="btn-tab-live" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600">LIVE NOW</button>
         </div>
 
@@ -573,24 +718,81 @@ const HTML_CONTENT = `
 
         async function switchTab(t) {
             currentTab = t;
-            ['btn-tab-rank', 'btn-tab-live', 'btn-tab-trend'].forEach(id => document.getElementById(id).className = 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600');
-            const activeId = t === 'ranking' ? 'btn-tab-rank' : (t === 'live' ? 'btn-tab-live' : 'btn-tab-trend');
-            document.getElementById(activeId).className = 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all tab-active';
+            ['btn-tab-rank', 'btn-tab-live', 'btn-tab-trend', 'btn-tab-viral', 'btn-tab-shorts'].forEach(id => {
+               const btn = document.getElementById(id);
+               if(btn) btn.className = 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600';
+            });
+            
+            const activeId = t === 'ranking' ? 'btn-tab-rank' : (t === 'live' ? 'btn-tab-live' : (t === 'viral' ? 'btn-tab-viral' : (t === 'shorts' ? 'btn-tab-shorts' : 'btn-tab-trend')));
+            if(document.getElementById(activeId)) {
+                if(t === 'viral') document.getElementById(activeId).className = 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all bg-purple-600 text-white shadow-lg';
+                else if(t === 'shorts') document.getElementById(activeId).className = 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all bg-red-600 text-white shadow-lg';
+                else document.getElementById(activeId).className = 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all tab-active';
+            }
+            
             ['section-ranking', 'section-live', 'section-trending'].forEach(id => document.getElementById(id).style.display = 'none');
-            document.getElementById('section-' + t).style.display = 'block';
-            document.getElementById('cat-list').style.display = t === 'live' ? 'none' : 'flex';
+            
+            if (t === 'viral' || t === 'shorts') {
+                document.getElementById('section-trending').style.display = 'block'; // Reuse trending grid
+            } else {
+                document.getElementById('section-' + t).style.display = 'block';
+            }
+            
+            document.getElementById('cat-list').style.display = (t === 'live' || t === 'ranking' || t === 'viral') ? 'none' : 'flex';
             loadData();
         }
 
         async function loadData() {
             const region = document.getElementById('regionSelect').value;
             const search = document.getElementById('searchInput').value;
-            let endpoint = currentTab === 'ranking' ? \`/api/ranking?region=\${region}&sort=\${currentSort}&category=\${currentCategory}&search=\${encodeURIComponent(search)}\` : (currentTab === 'live' ? \`/api/live-ranking?region=\${region}\` : \`/api/trending?region=\${region}&category=\${currentCategory}\`);
-            const res = await fetch(endpoint);
-            const data = await res.json();
-            if (currentTab === 'ranking') { currentRankData = data; visibleCount = 100; renderRanking(); }
-            else if (currentTab === 'live') renderLive(data);
-            else renderTrending(data);
+            
+            if (currentTab === 'ranking') {
+                const res = await fetch(\`/api/ranking?region=\${region}&sort=\${currentSort}&category=\${currentCategory}&search=\${encodeURIComponent(search)}\`);
+                const data = await res.json();
+                currentRankData = data; visibleCount = 100; renderRanking();
+            } else if (currentTab === 'live') {
+                const res = await fetch(\`/api/live-ranking?region=\${region}\`);
+                const data = await res.json();
+                renderLive(data);
+            } else if (currentTab === 'viral') {
+                document.getElementById('trend-grid').innerHTML = '<div class="col-span-full text-center py-20"><div class="animate-spin rounded-full h-12 w-12 border-b-4 border-purple-600 mx-auto"></div></div>';
+                const res = await fetch(\`/api/shorts-viral?region=\${region}\`);
+                const data = await res.json();
+                renderViral(data);
+            } else if (currentTab === 'shorts') {
+                document.getElementById('trend-grid').innerHTML = '<div class="col-span-full text-center py-20"><div class="animate-spin rounded-full h-12 w-12 border-b-4 border-red-600 mx-auto"></div></div>';
+                const res = await fetch(\`/api/shorts-trending?region=\${region}\`);
+                const data = await res.json();
+                renderTrending(data);
+            } else {
+                let endpoint = \`/api/trending?region=\${region}&category=\${currentCategory}\`;
+                const res = await fetch(endpoint);
+                const data = await res.json();
+                renderTrending(data);
+            }
+        }
+
+        function renderViral(items) {
+            const grid = document.getElementById('trend-grid');
+            if(!items || items.length === 0) { grid.innerHTML = '<div class="col-span-full text-center py-10 text-slate-400 font-bold">No High-Viral Shorts Found</div>'; return; }
+            grid.innerHTML = items.map((item, i) => \`
+                <div class="group relative bg-white rounded-xl overflow-hidden shadow-sm hover:shadow-xl transition-all duration-300 hover:-translate-y-1 ring-1 ring-slate-100">
+                    <div class="relative aspect-[9/16]">
+                        <img src="\${item.thumbnail}" class="w-full h-full object-cover" loading="lazy">
+                        <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-60"></div>
+                        <div class="absolute top-2 left-2 bg-purple-600 text-white text-xs font-black px-2 py-1 rounded shadow-lg z-10">Vf \${item.vf}x</div>
+                        <div class="absolute bottom-3 left-3 right-3 text-white">
+                            <div class="text-2xl font-black italic mb-1">#\${i+1}</div>
+                            <h3 class="font-bold text-sm leading-tight line-clamp-2 mb-1 drop-shadow-md">\${item.title}</h3>
+                            <div class="text-[10px] opacity-90 font-medium">\${item.channel}</div>
+                        </div>
+                    </div>
+                    <div class="p-3 bg-slate-50 flex justify-between items-center text-xs font-bold text-slate-600 border-t border-slate-100">
+                        <span class="flex items-center gap-1"><span class="text-red-500">▶</span> \${formatNum(item.views)}</span>
+                        <span class="text-slate-400">Subs: \${formatNum(item.subs)}</span>
+                    </div>
+                </div>
+            \`).join('');
         }
 
         function renderRanking() {
@@ -639,6 +841,17 @@ const HTML_CONTENT = `
             const data = await res.json();
             if (data.success) { alert("Success! Country updated."); document.getElementById('overrideModal').classList.add('hidden'); document.getElementById('ovInputId').value = ""; loadData(); }
             else { alert("Error: " + data.error); }
+        }
+        async function resetDB() {
+            if(!confirm("⚠️ WARNING: This will delete ALL data (including manually added channels) and restore the default list.\\n\\nAre you sure?")) return;
+            const res = await fetch("/api/reset-db");
+            const data = await res.json();
+            if(data.success) {
+                alert("✅ DB Reset Complete!\\n\\nPlease click [CH SYNC] to fetch latest stats.");
+                location.reload();
+            } else {
+                alert("Error: " + data.error);
+            }
         }
         function changeSort(s) { currentSort = s; document.getElementById('tab-subs').className = s === 'subs' ? 'px-6 py-2 rounded-2xl text-xs font-black transition-all tab-active' : 'px-6 py-2 rounded-2xl text-xs font-black transition-all text-slate-400'; document.getElementById('tab-views').className = s === 'views' ? 'px-6 py-2 rounded-2xl text-xs font-black transition-all tab-active' : 'px-6 py-2 rounded-2xl text-xs font-black transition-all text-slate-400'; loadData(); }
         function changeCategory(c) { currentCategory = c; document.querySelectorAll('#cat-list button').forEach(b => b.className = "px-5 py-2.5 rounded-2xl text-[11px] font-black bg-white text-slate-400 border border-slate-100 hover:bg-slate-50"); const activeId = c === 'all' ? 'cat-all' : 'cat-' + c; if(document.getElementById(activeId)) document.getElementById(activeId).className = "px-5 py-2.5 rounded-2xl text-[11px] font-black bg-slate-900 text-white shadow-md"; loadData(); }
