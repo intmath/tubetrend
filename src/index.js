@@ -168,6 +168,8 @@ export default {
         // 5. 채널 개별 등록 API (핸들 지원)
         if (url.pathname === "/api/add-channel") {
             const inputId = url.searchParams.get("id");
+            const customCountry = url.searchParams.get("customCountry");
+
             let channelUrl = inputId.startsWith('@') ?
                 `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&forHandle=${encodeURIComponent(inputId)}` :
                 `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${inputId}`;
@@ -177,11 +179,14 @@ export default {
             if (!data.items || data.items.length === 0) return new Response(JSON.stringify({ success: false, error: "Not found" }), { status: 404 });
 
             const item = data.items[0];
+            // Determine Country: If Custom Provided & Not Auto -> Use it. Else -> Use API Country (fallback to KR)
+            const finalCountry = (customCountry && customCountry !== 'AUTO') ? customCountry : (item.snippet.country || "KR");
+
             await env.DB.batch([
-                env.DB.prepare(`INSERT INTO Channels (id, title, country, category, thumbnail) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET title=excluded.title`).bind(item.id, item.snippet.title, region, item.snippet.categoryId || "0", item.snippet.thumbnails.default.url),
+                env.DB.prepare(`INSERT INTO Channels (id, title, country, category, thumbnail) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET title=excluded.title, country=excluded.country`).bind(item.id, item.snippet.title, finalCountry, item.snippet.categoryId || "0", item.snippet.thumbnails.default.url),
                 env.DB.prepare(`INSERT OR REPLACE INTO ChannelStats (channel_id, subs, views, rank_date) VALUES (?, ?, ?, ?)`).bind(item.id, parseInt(item.statistics.subscriberCount || 0), parseInt(item.statistics.viewCount || 0), this.getKSTDate())
             ]);
-            return new Response(JSON.stringify({ success: true, title: item.snippet.title }));
+            return new Response(JSON.stringify({ success: true, title: item.snippet.title, country: finalCountry }));
         }
 
         // 6. 국가 강제 지정 (Override)
@@ -783,6 +788,14 @@ const HTML_CONTENT = `
                     <label class="block text-xs font-bold text-slate-500 mb-1">CHANNEL ID / HANDLE</label>
                     <input type="text" id="newChannelInput" placeholder="@handle or UC..." class="w-full p-4 rounded-2xl bg-slate-50 border border-slate-200 font-bold text-sm">
                 </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-500 mb-1">COUNTRY SETTING</label>
+                    <select id="newChannelCountry" class="w-full p-4 rounded-2xl bg-slate-50 border border-slate-200 font-bold text-sm">
+                        <option value="AUTO" selected>🌐 Auto (Use Channel's Location)</option>
+                        <option value="KR">🇰🇷 Korea</option><option value="US">🇺🇸 USA</option><option value="JP">🇯🇵 Japan</option>
+                        <option value="IN">🇮🇳 India</option><option value="BR">🇧🇷 Brazil</option><option value="DE">🇩🇪 Germany</option><option value="FR">🇫🇷 France</option>
+                    </select>
+                </div>
                 <button onclick="addNewChannel()" class="w-full py-4 bg-slate-900 text-white rounded-2xl font-black hover:bg-violet-600 transition-all shadow-lg mt-2">REGISTER CHANNEL</button>
             </div>
         </div>
@@ -927,7 +940,25 @@ const HTML_CONTENT = `
         async function updateSystem() { const btn = document.getElementById('syncBtn'); btn.disabled = true; document.getElementById('syncStatus').innerText = "채널 정보를 갱신 중입니다... (약 20초 소요)"; document.getElementById('syncStatus').classList.remove('hidden'); await fetch('/mass-discover?region=' + document.getElementById('regionSelect').value); setTimeout(() => { btn.disabled = false; document.getElementById('syncStatus').classList.add('hidden'); loadData(); }, 3000); }
         async function syncLive() { const btn = document.getElementById('liveSyncBtn'); btn.disabled = true; document.getElementById('syncStatus').innerText = "라이브 방송을 검색 중입니다... (약 5초 소요)"; document.getElementById('syncStatus').classList.remove('hidden'); await fetch('/api/sync-live?region=' + document.getElementById('regionSelect').value); setTimeout(() => { btn.disabled = false; document.getElementById('syncStatus').classList.add('hidden'); loadData(); switchTab('live'); }, 2000); }
         async function batchCollect() { const btn = document.getElementById('batchBtn'); btn.disabled = true; document.getElementById('syncStatus').classList.remove('hidden'); await fetch('/api/batch-collect?region=' + document.getElementById('regionSelect').value); setTimeout(() => { btn.disabled = false; document.getElementById('syncStatus').classList.add('hidden'); loadData(); }, 3000); }
-        async function addNewChannel() { const idInput = document.getElementById('newChannelInput'); const id = idInput.value.trim(); if (!id) return alert("ID 입력 필요"); const res = await fetch(\`/api/add-channel?id=\${encodeURIComponent(id)}&region=\${document.getElementById('regionSelect').value}\`); const data = await res.json(); if (data.success) { alert(\`[\${data.title}] 등록 완료!\`); idInput.value = ""; document.getElementById('addModal').classList.add('hidden'); loadData(); } else alert("실패: " + (data.error || "형식 확인")); }
+        async function addNewChannel() { 
+            const idInput = document.getElementById('newChannelInput'); 
+            const countryInput = document.getElementById('newChannelCountry');
+            const id = idInput.value.trim(); 
+            const country = countryInput.value;
+
+            if (!id) return alert("ID 입력 필요"); 
+            
+            const res = await fetch(\`/api/add-channel?id=\${encodeURIComponent(id)}&customCountry=\${country}\`); 
+            const data = await res.json(); 
+            
+            if (data.success) { 
+                alert(\`[\${data.title}] 등록 완료! (Country: \${data.country})\`); 
+                idInput.value = ""; 
+                countryInput.value = "AUTO"; // Reset to Auto
+                document.getElementById('addModal').classList.add('hidden'); 
+                loadData(); 
+            } else alert("실패: " + (data.error || "형식 확인")); 
+        }
         function closeModal() { document.getElementById('modal').classList.add('hidden'); if(chart) chart.destroy(); }
         function openAddModal() { document.getElementById('addModal').classList.remove('hidden'); }
         function openOverrideModal() { document.getElementById('overrideModal').classList.remove('hidden'); }
