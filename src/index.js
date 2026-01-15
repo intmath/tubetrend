@@ -207,7 +207,9 @@ export default {
             const catParam = category === 'all' ? '' : `&videoCategoryId=${category}`;
             let allItems = [];
             let nextToken = "";
-            for (let i = 0; i < 2; i++) {
+
+            // 1. Fetch more depth (4 pages = ~200 items)
+            for (let i = 0; i < 4; i++) {
                 const searchUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&chart=mostPopular&regionCode=${region}${catParam}&maxResults=50&pageToken=${nextToken}`;
                 try {
                     const res = await this.fetchWithFallback(searchUrl, env);
@@ -217,6 +219,25 @@ export default {
                     if (!nextToken) break;
                 } catch (e) { break; }
             }
+
+            // 3. Auto-Save Channels (Background)
+            // Use video thumbnail as temporary channel thumbnail; DailySync will fix it later.
+            if (allItems.length > 0) {
+                const uniqueChannels = new Map();
+                allItems.forEach(item => {
+                    if (!uniqueChannels.has(item.snippet.channelId)) {
+                        uniqueChannels.set(item.snippet.channelId, item);
+                    }
+                });
+
+                const stmts = Array.from(uniqueChannels.values()).map(item =>
+                    env.DB.prepare(`INSERT INTO Channels (id, title, country, category, thumbnail) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`)
+                        .bind(item.snippet.channelId, item.snippet.channelTitle, region, item.snippet.categoryId || "0", item.snippet.thumbnails.default.url)
+                );
+                // We use ctx.waitUntil if available, effectively fire-and-forget for the user request
+                if (stmts.length > 0) ctx.waitUntil(env.DB.batch(stmts));
+            }
+
             return new Response(JSON.stringify(allItems.map(item => ({ id: item.id, title: item.snippet.title, channel: item.snippet.channelTitle, thumbnail: item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default.url, views: item.statistics.viewCount, date: item.snippet.publishedAt.slice(0, 10) }))), { headers: { "Content-Type": "application/json" } });
         }
 
