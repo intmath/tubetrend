@@ -114,12 +114,19 @@ export default {
         if (url.pathname === "/mass-discover") {
             ctx.waitUntil((async () => {
                 await Promise.all([
-                    this.syncLiveStreams(env, region),
                     (async () => {
                         await this.performMassDiscover(env, region);
                         await this.handleDailySync(env);
                     })()
                 ]);
+            })());
+            return new Response(JSON.stringify({ success: true }));
+        }
+
+        // 4-1. LIVE SYNC (라이브 검색 전용)
+        if (url.pathname === "/api/sync-live") {
+            ctx.waitUntil((async () => {
+                await this.syncLiveStreams(env, region);
             })());
             return new Response(JSON.stringify({ success: true }));
         }
@@ -369,7 +376,8 @@ const HTML_CONTENT = `
                 </select>
                 <button onclick="batchCollect()" id="batchBtn" class="bg-indigo-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg active:scale-95">TOP 300 수집</button>
                 <button onclick="downloadCSV()" class="bg-emerald-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">CSV</button>
-                <button onclick="updateSystem()" id="syncBtn" class="bg-slate-900 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">SYNC</button>
+                <button onclick="syncLive()" id="liveSyncBtn" class="bg-red-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg active:scale-95">LIVE SYNC</button>
+                <button onclick="updateSystem()" id="syncBtn" class="bg-slate-900 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">CH SYNC</button>
                 <button onclick="openAddModal()" class="bg-violet-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg active:scale-95">ADD CHANNEL</button>
                 <button onclick="openOverrideModal()" class="bg-red-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">OVERRIDE</button>
             </div>
@@ -378,7 +386,7 @@ const HTML_CONTENT = `
 
     <main class="max-w-6xl mx-auto px-4 mt-10">
         <div id="syncStatus" class="hidden mb-6 p-4 bg-indigo-50 text-indigo-600 rounded-[2rem] border border-indigo-100 text-sm font-black text-center animate-pulse">
-            백그라운드 수집을 시작했습니다. 약 20초 후 새로고침(F5) 하세요.
+            백그라운드 작업을 시작했습니다. 잠시 후 새로고침 하세요.
         </div>
 
         <div class="flex gap-2 mb-8 bg-slate-100 p-1.5 rounded-[2rem] w-fit border border-slate-200 mx-auto shadow-inner">
@@ -528,7 +536,8 @@ const HTML_CONTENT = `
         function toggleChartType(type) { currentChartType = type; updateChartButtons(); renderChart(); }
         function updateChartButtons() { const isSubs = currentChartType === 'subs'; document.getElementById('btn-chart-subs').className = isSubs ? "px-6 py-2 rounded-xl text-[10px] font-black transition-all tab-active" : "px-6 py-2 rounded-xl text-[10px] font-black transition-all text-slate-400"; document.getElementById('btn-chart-views').className = !isSubs ? "px-6 py-2 rounded-xl text-[10px] font-black transition-all tab-active-blue" : "px-6 py-2 rounded-xl text-[10px] font-black transition-all text-slate-400"; }
         function renderChart() { const ctx = document.getElementById('hChart').getContext('2d'); if (chart) chart.destroy(); const isSubs = currentChartType === 'subs'; const color = isSubs ? '#dc2626' : '#2563eb'; chart = new Chart(ctx, { type: 'line', data: { labels: historyData.map(d => d.rank_date.slice(5)), datasets: [{ data: historyData.map(d => isSubs ? d.subs : d.views), borderColor: color, backgroundColor: isSubs ? 'rgba(220, 38, 38, 0.1)' : 'rgba(37, 99, 235, 0.1)', borderWidth: 4, tension: 0.4, fill: true, pointRadius: 4, pointBackgroundColor: color }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { border: { display: false }, grid: { color: '#f1f5f9' }, ticks: { callback: v => formatNum(v), font: { size: 9, weight: 'bold' } } }, x: { border: { display: false }, grid: { display: false }, ticks: { font: { size: 9, weight: 'bold' } } } } } }); }
-        async function updateSystem() { const btn = document.getElementById('syncBtn'); btn.disabled = true; document.getElementById('syncStatus').classList.remove('hidden'); await fetch('/mass-discover?region=' + document.getElementById('regionSelect').value); setTimeout(() => { btn.disabled = false; document.getElementById('syncStatus').classList.add('hidden'); loadData(); }, 3000); }
+        async function updateSystem() { const btn = document.getElementById('syncBtn'); btn.disabled = true; document.getElementById('syncStatus').innerText = "채널 정보를 갱신 중입니다... (약 20초 소요)"; document.getElementById('syncStatus').classList.remove('hidden'); await fetch('/mass-discover?region=' + document.getElementById('regionSelect').value); setTimeout(() => { btn.disabled = false; document.getElementById('syncStatus').classList.add('hidden'); loadData(); }, 3000); }
+        async function syncLive() { const btn = document.getElementById('liveSyncBtn'); btn.disabled = true; document.getElementById('syncStatus').innerText = "라이브 방송을 검색 중입니다... (약 5초 소요)"; document.getElementById('syncStatus').classList.remove('hidden'); await fetch('/api/sync-live?region=' + document.getElementById('regionSelect').value); setTimeout(() => { btn.disabled = false; document.getElementById('syncStatus').classList.add('hidden'); loadData(); switchTab('live'); }, 2000); }
         async function batchCollect() { const btn = document.getElementById('batchBtn'); btn.disabled = true; document.getElementById('syncStatus').classList.remove('hidden'); await fetch('/api/batch-collect?region=' + document.getElementById('regionSelect').value); setTimeout(() => { btn.disabled = false; document.getElementById('syncStatus').classList.add('hidden'); loadData(); }, 3000); }
         async function addNewChannel() { const idInput = document.getElementById('newChannelInput'); const id = idInput.value.trim(); if (!id) return alert("ID 입력 필요"); const res = await fetch(\`/api/add-channel?id=\${encodeURIComponent(id)}&region=\${document.getElementById('regionSelect').value}\`); const data = await res.json(); if (data.success) { alert(\`[\${data.title}] 등록 완료!\`); idInput.value = ""; document.getElementById('addModal').classList.add('hidden'); loadData(); } else alert("실패: " + (data.error || "형식 확인")); }
         function closeModal() { document.getElementById('modal').classList.add('hidden'); if(chart) chart.destroy(); }
