@@ -4,6 +4,31 @@ export default {
         return env.YOUTUBE_API_KEYS.split(',').map(key => key.trim());
     },
 
+    // Default Data
+    async restoreDefaults(env, region) {
+        const { RANKING_DATA, LIVE_DATA } = await import('./default_channels.js');
+        const today = this.getKSTDate();
+
+        // 1. Restore Ranking Data (Channels & ChannelStats)
+        if (RANKING_DATA && RANKING_DATA.length > 0) {
+            console.log(`Restoring ${RANKING_DATA.length} ranking channels...`);
+            const stmts = RANKING_DATA.flatMap(item => [
+                env.DB.prepare(`INSERT OR IGNORE INTO Channels (id, title, country, category, thumbnail) VALUES (?, ?, ?, ?, ?)`).bind(item.id, item.title, item.country || "KR", item.category || "0", item.thumbnail || ""),
+                env.DB.prepare(`INSERT OR IGNORE INTO ChannelStats (channel_id, subs, views, rank_date) VALUES (?, 0, 0, ?)`).bind(item.id, today)
+            ]);
+            await env.DB.batch(stmts);
+        }
+
+        // 2. Restore Live Data (LiveStreamers only)
+        if (LIVE_DATA && LIVE_DATA.length > 0) {
+            console.log(`Restoring ${LIVE_DATA.length} live streamers...`);
+            const liveStmts = LIVE_DATA.map(item =>
+                env.DB.prepare(`INSERT OR IGNORE INTO LiveStreamers (channel_id, title, thumbnail, region, last_live_date) VALUES (?, ?, ?, ?, ?)`).bind(item.id, item.title, item.thumbnail || "", region, null)
+            );
+            await env.DB.batch(liveStmts);
+        }
+    },
+
     async fetchWithFallback(url, env) {
         const keys = this.getApiKeys(env);
         if (keys.length === 0) throw new Error("No API Keys found");
@@ -57,7 +82,15 @@ export default {
             let filterBindings = [];
             if (region !== "ALL") { filterConditions.push("c.country = ?"); filterBindings.push(region); }
             if (category !== "all") { filterConditions.push("c.category = ?"); filterBindings.push(category); }
+            if (category !== "all") { filterConditions.push("c.category = ?"); filterBindings.push(category); }
             const orderByColumn = sort === "views" ? "MAX(t.views)" : "MAX(t.subs)";
+
+            // Check for Empty DB & Auto-Restore
+            const { count } = await env.DB.prepare("SELECT count(*) as count FROM Channels").first();
+            if (count === 0) {
+                await this.restoreDefaults(env, region);
+            }
+
             const query = `
                 WITH LatestDate AS (SELECT MAX(rank_date) as d FROM ChannelStats),
                 PrevDate AS (SELECT MAX(rank_date) as pd FROM ChannelStats WHERE rank_date < (SELECT d FROM LatestDate)),
@@ -212,6 +245,18 @@ export default {
             return new Response("Database optimized with indexes.");
         }
 
+        if (url.pathname === "/api/optimize-db") {
+            await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_channelstats_date_channel ON ChannelStats(rank_date, channel_id)`).run();
+            await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_channels_category ON Channels(category)`).run();
+            await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_channels_country ON Channels(country)`).run();
+            return new Response("Database optimized with indexes.");
+        }
+
+        if (url.pathname === "/api/all-live-streamers") {
+            const { results } = await env.DB.prepare("SELECT channel_id, title, last_live_date FROM LiveStreamers").all();
+            return new Response(JSON.stringify(results || []), { headers: { "Content-Type": "application/json" } });
+        }
+
         return new Response(HTML_CONTENT, { headers: { "Content-Type": "text/html; charset=utf-8" } });
     },
 
@@ -238,9 +283,12 @@ export default {
 
         const [newChannels, additionalVideoIds] = await Promise.all([discoveryPromise, activitiesCheckPromise]);
 
-        // 2. Accumulate (Insert new channels to LiveStreamers)
+        // 2. Accumulate (Insert new channels to LiveStreamers with last_live_date)
+        const today = this.getKSTDate();
         const accStmts = newChannels.map(item =>
-            env.DB.prepare("INSERT OR IGNORE INTO LiveStreamers (channel_id, title, thumbnail, region) VALUES (?, ?, ?, ?)").bind(item.snippet.channelId, item.snippet.channelTitle, item.snippet.thumbnails.default.url, region)
+            env.DB.prepare(`INSERT INTO LiveStreamers (channel_id, title, thumbnail, region, last_live_date) VALUES (?, ?, ?, ?, ?) 
+            ON CONFLICT(channel_id) DO UPDATE SET last_live_date=excluded.last_live_date, title=excluded.title, thumbnail=excluded.thumbnail, region=excluded.region`)
+                .bind(item.snippet.channelId, item.snippet.channelTitle, item.snippet.thumbnails.default.url, region, today)
         );
         if (accStmts.length > 0) await env.DB.batch(accStmts);
 
@@ -267,8 +315,6 @@ export default {
         }
 
         // 6. Sort by Viewers & Save top 100
-        // Filter strictly for live logic if needed, but 'liveStreamingDetails' presence usually implies it.
-        // We double check 'concurrentViewers' exists to ensure it's actually live now.
         finalLiveItems = finalLiveItems.filter(item => item.liveStreamingDetails && (item.liveStreamingDetails.concurrentViewers || item.snippet.liveBroadcastContent === 'live'));
         finalLiveItems.sort((a, b) => parseInt(b.liveStreamingDetails?.concurrentViewers || 0) - parseInt(a.liveStreamingDetails?.concurrentViewers || 0));
         const top100 = finalLiveItems.slice(0, 100);
@@ -284,6 +330,16 @@ export default {
             region
         ));
         if (stmts.length > 0) await env.DB.batch(stmts);
+
+        // 7. Pruning (Remove inactive channels > 30 days)
+        try {
+            const thirtyDaysAgo = this.getKSTDate(-30);
+            await env.DB.prepare("DELETE FROM LiveStreamers WHERE last_live_date < ?").bind(thirtyDaysAgo).run();
+            // Optional: Also delete NULL dates if you want to clean up old legacy data immediately, 
+            // but safer to let them stay until they are confirmed inactive or we manually migrate.
+            // For now, let's also delete NULLs if we want aggressive cleaning, OR update them to today if found.
+            // Let's stick to deleting explicit old dates.
+        } catch (e) { console.error("Pruning failed", e); }
     },
 
     async checkLiveStatusViaActivities(env, channelIds) {
@@ -375,7 +431,10 @@ const HTML_CONTENT = `
                     <option value="IN">🇮🇳 India</option><option value="BR">🇧🇷 Brazil</option><option value="DE">🇩🇪 Germany</option><option value="FR">🇫🇷 France</option>
                 </select>
                 <button onclick="batchCollect()" id="batchBtn" class="bg-indigo-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg active:scale-95">TOP 300 수집</button>
-                <button onclick="downloadCSV()" class="bg-emerald-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">CSV</button>
+                <div class="flex gap-1">
+                    <button onclick="downloadCSV()" class="bg-emerald-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">CSV (CH)</button>
+                    <button onclick="downloadLiveCSV()" class="bg-emerald-800 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">CSV (LIVE)</button>
+                </div>
                 <button onclick="syncLive()" id="liveSyncBtn" class="bg-red-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg active:scale-95">LIVE SYNC</button>
                 <button onclick="updateSystem()" id="syncBtn" class="bg-slate-900 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">CH SYNC</button>
                 <button onclick="openAddModal()" class="bg-violet-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg active:scale-95">ADD CHANNEL</button>
@@ -531,7 +590,15 @@ const HTML_CONTENT = `
         function loadMoreRanking() { visibleCount += 100; renderRanking(); }
         function renderLive(data) { document.getElementById('live-grid').innerHTML = data.map(d => \`<div class="bg-white rounded-[2rem] p-3 shadow-sm border border-slate-100 hover:shadow-2xl transition-all cursor-pointer group" onclick="window.open('https://youtube.com/watch?v=\${d.video_id}')"><div class="relative mb-4 overflow-hidden rounded-[1.5rem] h-32"><img src="\${d.thumbnail}" class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"><div class="absolute top-3 left-3 bg-red-600 text-white px-2 py-1 rounded-lg text-[8px] font-black">LIVE</div></div><div class="mb-2"><span class="text-[10px] font-black text-red-600 bg-red-50 px-2 py-1 rounded-lg">\${d.viewers.toLocaleString()}명</span></div><h4 class="font-black text-slate-900 line-clamp-1 text-xs">\${d.video_title}</h4><p class="text-[9px] font-bold text-slate-400 truncate">\${d.channel_name}</p></div>\`).join(''); }
         function renderTrending(data) { document.getElementById('trend-grid').innerHTML = data.map(v => \`<div class="bg-white rounded-[2rem] p-3 shadow-sm border border-slate-100 hover:shadow-2xl transition-all cursor-pointer group" onclick="window.open('https://youtube.com/watch?v=\${v.id}')"><div class="relative mb-3 overflow-hidden rounded-[1.5rem] h-40"><img src="\${v.thumbnail}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"></div><div class="px-1"><h4 class="font-black text-slate-900 line-clamp-2 text-[13px] mb-1 group-hover:text-red-600">\${v.title}</h4><p class="text-[10px] font-bold text-slate-400 truncate mb-2">\${v.channel}</p><div class="flex justify-between items-center text-[10px] font-black text-slate-500 bg-slate-50 p-2 rounded-xl"><span>👁 \${formatNum(v.views)}</span><span>📅 \${v.date}</span></div></div></div>\`).join(''); }
-        function downloadCSV() { if (!currentRankData.length) return alert("데이터 없음"); let csv = "\uFEFFRank,Channel Name,Country,Subscribers,Total Views,24h Growth\\n"; currentRankData.forEach(item => { csv += \`\${item.absolute_rank},"\${item.title.replace(/"/g, '""')}",\${item.country},\${item.current_subs},\${item.current_views},\${item.growth}\\n\`; }); const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' })); link.download = \`TubeTrend_\${new Date().toISOString().slice(0,10)}.csv\`; link.click(); }
+        function downloadCSV() { if (!currentRankData.length) return alert("데이터 없음"); let csv = "\uFEFFRank,Channel ID,Channel Name,Country,Subscribers,Total Views,24h Growth\\n"; currentRankData.forEach(item => { csv += \`\${item.absolute_rank},\${item.id},"\${item.title.replace(/"/g, '""')}",\${item.country},\${item.current_subs},\${item.current_views},\${item.growth}\\n\`; }); const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' })); link.download = \`TubeTrend_Ranking_\${new Date().toISOString().slice(0,10)}.csv\`; link.click(); }
+        async function downloadLiveCSV() { 
+            const res = await fetch('/api/all-live-streamers'); 
+            const data = await res.json(); 
+            if (!data.length) return alert("라이브 후보 데이터 없음"); 
+            let csv = "\uFEFFChannel ID,Channel Name,Last Live Date\\n"; 
+            data.forEach(item => { csv += \`\${item.channel_id},"\${item.title ? item.title.replace(/"/g, '""') : ''}",\${item.last_live_date || ''}\\n\`; }); 
+            const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' })); link.download = \`TubeTrend_LiveCandidates_\${new Date().toISOString().slice(0,10)}.csv\`; link.click(); 
+        }
         async function openModal(id, title, thumb, subs, views, growth) { document.getElementById('modal').classList.remove('hidden'); document.getElementById('mTitle').innerText = title; document.getElementById('mThumb').src = thumb; document.getElementById('mSubs').innerText = formatNum(subs); document.getElementById('mViews').innerText = formatNum(views); document.getElementById('mGrowth').innerText = "+" + formatNum(growth); document.getElementById('mChannelLink').href = 'https://www.youtube.com/channel/' + id; currentChartType = 'subs'; updateChartButtons(); if (chart) chart.destroy(); const res = await fetch('/api/channel-history?id=' + id); historyData = await res.json(); setTimeout(renderChart, 200); }
         function toggleChartType(type) { currentChartType = type; updateChartButtons(); renderChart(); }
         function updateChartButtons() { const isSubs = currentChartType === 'subs'; document.getElementById('btn-chart-subs').className = isSubs ? "px-6 py-2 rounded-xl text-[10px] font-black transition-all tab-active" : "px-6 py-2 rounded-xl text-[10px] font-black transition-all text-slate-400"; document.getElementById('btn-chart-views').className = !isSubs ? "px-6 py-2 rounded-xl text-[10px] font-black transition-all tab-active-blue" : "px-6 py-2 rounded-xl text-[10px] font-black transition-all text-slate-400"; }
