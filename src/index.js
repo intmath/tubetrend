@@ -224,6 +224,99 @@ export default {
             }
         }
 
+        // 8. FULL BACKUP EXPORT (History)
+        if (url.pathname === "/api/backup-export") {
+            const { results } = await env.DB.prepare(`
+                SELECT c.id, c.title, c.country, c.category, c.thumbnail, s.rank_date, s.subs, s.views 
+                FROM Channels c 
+                LEFT JOIN ChannelStats s ON c.id = s.channel_id 
+                ORDER BY c.id, s.rank_date
+            `).all();
+
+            return new Response(JSON.stringify(results || []), { headers: { "Content-Type": "application/json" } });
+        }
+
+        // 9. FULL BACKUP IMPORT (Restore)
+        if (url.pathname === "/api/backup-import" && request.method === "POST") {
+            try {
+                // Step 0: Ensure Integrity (Heal DB)
+                try {
+                    // Try creating unique index. If it fails, we likely have duplicates.
+                    await env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_stats_unique ON ChannelStats(channel_id, rank_date)").run();
+                } catch (e) {
+                    // Index creation failed (Constraint violation?). Deduplicate and retry.
+                    console.log("Deduplicating ChannelStats...");
+                    await env.DB.prepare(`DELETE FROM ChannelStats WHERE rowid NOT IN (SELECT MAX(rowid) FROM ChannelStats GROUP BY channel_id, rank_date)`).run();
+                    await env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_stats_unique ON ChannelStats(channel_id, rank_date)").run();
+                }
+
+                const csvText = await request.text();
+                const lines = csvText.split('\n').filter(l => l.trim() !== '');
+
+                // Skip Header
+                const dataLines = lines.slice(1);
+
+                // Batch Arrays
+                let channelStmts = [];
+                let statsStmts = [];
+                let processedIds = new Set();
+
+                // Helper to parse CSV line (handles quotes roughly)
+                const parseCSVLine = (str) => {
+                    const arr = [];
+                    let quote = false;
+                    let col = '';
+                    for (let c of str) {
+                        if (c === '"') { quote = !quote; continue; }
+                        if (c === ',' && !quote) { arr.push(col); col = ''; continue; }
+                        col += c;
+                    }
+                    arr.push(col);
+                    return arr;
+                };
+
+                // ID, Name, Country, Category, Thumb, Date, Subs, Views
+                // 0   1     2        3         4      5     6     7
+
+                for (let line of dataLines) {
+                    const cols = parseCSVLine(line);
+                    if (cols.length < 8) continue;
+
+                    const [id, title, country, category, thumb, date, subs, views] = cols;
+
+                    if (!processedIds.has(id)) {
+                        channelStmts.push(
+                            env.DB.prepare(`INSERT INTO Channels (id, title, country, category, thumbnail) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET title=excluded.title`)
+                                .bind(id, title, country, category, thumb)
+                        );
+                        processedIds.add(id);
+                    }
+
+                    if (date && date !== 'null') { // Check if stats exist
+                        statsStmts.push(
+                            env.DB.prepare(`INSERT INTO ChannelStats (channel_id, subs, views, rank_date) VALUES (?, ?, ?, ?) ON CONFLICT(channel_id, rank_date) DO UPDATE SET subs=excluded.subs, views=excluded.views`)
+                                .bind(id, parseInt(subs || 0), parseInt(views || 0), date)
+                        );
+                    }
+                }
+
+                // Execute Batches (Chunked for safety)
+                const executeBatch = async (stmts) => {
+                    for (let i = 0; i < stmts.length; i += 50) {
+                        await env.DB.batch(stmts.slice(i, i + 50));
+                    }
+                };
+
+                await executeBatch(channelStmts);
+                await executeBatch(statsStmts);
+
+                return new Response(JSON.stringify({ success: true, count: dataLines.length }));
+
+            } catch (e) {
+                return new Response(JSON.stringify({ success: false, error: e.message }));
+            }
+        }
+
         if (url.pathname === "/api/trending") {
             const region = url.searchParams.get("region") || "US";
             const category = url.searchParams.get("category") || "all";
@@ -599,6 +692,11 @@ const HTML_CONTENT = `
                     <button onclick="downloadCSV()" class="bg-emerald-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">CSV (CH)</button>
                     <button onclick="downloadLiveCSV()" class="bg-emerald-800 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">CSV (LIVE)</button>
                 </div>
+                <div class="flex gap-1">
+                    <button onclick="downloadBackup()" class="bg-blue-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">BACKUP</button>
+                    <button onclick="document.getElementById('restoreInput').click()" class="bg-blue-800 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">RESTORE</button>
+                    <input type="file" id="restoreInput" accept=".csv" class="hidden" onchange="restoreBackup(this)">
+                </div>
                 <button onclick="syncLive()" id="liveSyncBtn" class="bg-red-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg active:scale-95">LIVE SYNC</button>
                 <button onclick="updateSystem()" id="syncBtn" class="bg-slate-900 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">CH SYNC</button>
                 <button onclick="openAddModal()" class="bg-violet-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg active:scale-95">ADD CHANNEL</button>
@@ -738,7 +836,7 @@ const HTML_CONTENT = `
                 document.getElementById('section-' + t).style.display = 'block';
             }
             
-            document.getElementById('cat-list').style.display = (t === 'live' || t === 'ranking' || t === 'viral') ? 'none' : 'flex';
+            document.getElementById('cat-list').style.display = (t === 'live' || t === 'viral') ? 'none' : 'flex';
             loadData();
         }
 
@@ -841,6 +939,57 @@ const HTML_CONTENT = `
             const data = await res.json();
             if (data.success) { alert("Success! Country updated."); document.getElementById('overrideModal').classList.add('hidden'); document.getElementById('ovInputId').value = ""; loadData(); }
             else { alert("Error: " + data.error); }
+        }
+
+        async function downloadBackup() {
+            const res = await fetch('/api/backup-export');
+            const data = await res.json();
+            if(!data.length) return alert("No data to backup");
+            
+            let csv = "\\uFEFFChannel ID,Channel Name,Country,Category,Thumbnail,Date,Subscribers,Views\\n";
+            data.forEach(item => {
+                csv += item.id + ',"' + (item.title||'').replace(/"/g, '""') + '",' + item.country + ',' + item.category + ',"' + (item.thumbnail||'') + '",' + item.rank_date + ',' + item.subs + ',' + item.views + '\\n';
+            });
+
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+            link.download = 'TubeTrend_FullBackup_' + new Date().toISOString().slice(0,10) + '.csv';
+            link.click();
+        }
+
+        async function restoreBackup(input) {
+            const file = input.files[0];
+            if (!file) return;
+
+            if (!confirm("⚠️ RESTORE WARNING:\\nThis will MERGE/OVERWRITE data from the CSV into your database.\\n\\nContinue?")) {
+                input.value = ""; return;
+            }
+
+            const formData = new FormData();
+            formData.append("file", file); 
+            
+            // Read file content
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+                const text = e.target.result;
+                const btn = document.getElementById('syncBtn'); 
+                document.getElementById('syncStatus').innerText = "Restoring Backup... Please wait.";
+                document.getElementById('syncStatus').classList.remove('hidden');
+                
+                const res = await fetch('/api/backup-import', { method: 'POST', body: text });
+                const data = await res.json();
+                
+                document.getElementById('syncStatus').classList.add('hidden');
+                
+                if (data.success) {
+                    alert('✅ Restore Complete! Processed ' + data.count + ' rows.');
+                    loadData();
+                } else {
+                    alert("Restore Failed: " + data.error);
+                }
+                input.value = "";
+            };
+            reader.readAsText(file);
         }
         async function resetDB() {
             if(!confirm("⚠️ WARNING: This will delete ALL data (including manually added channels) and restore the default list.\\n\\nAre you sure?")) return;
