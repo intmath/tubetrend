@@ -1,4 +1,4 @@
-export default {
+﻿export default {
     getApiKeys(env) {
         if (!env.YOUTUBE_API_KEYS) return [];
         return env.YOUTUBE_API_KEYS.split(',').map(key => key.trim());
@@ -757,7 +757,8 @@ const HTML_CONTENT = `
         </div>
 
         <div class="flex gap-2 mb-8 bg-slate-100 p-1.5 rounded-[2rem] w-fit border border-slate-200 mx-auto shadow-inner">
-            <button onclick="switchTab('ranking')" id="btn-tab-rank" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all tab-active">CHANNEL RANK</button>
+            <button onclick="switchTab('dashboard')" id="btn-tab-dashboard" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all tab-active">DASHBOARD</button>
+            <button onclick="switchTab('ranking')" id="btn-tab-rank" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600">CHANNEL RANK</button>
             <button onclick="switchTab('trending')" id="btn-tab-trend" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600">TRENDING</button>
             <button onclick="switchTab('shorts')" id="btn-tab-shorts" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600">SHORTS</button>
             <button onclick="switchTab('viral')" id="btn-tab-viral" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600">HOT SHORTS</button>
@@ -770,7 +771,47 @@ const HTML_CONTENT = `
 
 
 
-        <div id="section-ranking" class="block">
+        <div id="section-dashboard" class="block">
+            <div class="flex flex-col gap-10">
+                <!-- Top Rankings -->
+                <div class="bg-white rounded-[2.5rem] p-8 border border-slate-100 shadow-xl">
+                    <h2 class="text-xl font-black text-slate-900 mb-6 flex items-center gap-2"><span class="text-2xl">🏆</span> TOP 10 CHANNELS</h2>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left min-w-[600px]">
+                            <thead class="bg-slate-50 border-b text-slate-400 font-black text-[10px] uppercase tracking-widest">
+                                <tr><th class="p-4 rounded-tl-xl text-center w-20">Rank</th><th class="p-4">Channel</th><th class="p-4 text-right">Subs</th><th class="p-4 text-right">Total Views</th><th class="p-4 text-right rounded-tr-xl">24h Growth</th></tr>
+                            </thead>
+                            <tbody id="dash-rank-body" class="divide-y divide-slate-50"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <!-- 4-Quadrant Grid -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- 1. Trending -->
+                    <div class="bg-white rounded-[2.5rem] p-6 border border-slate-100 shadow-xl">
+                        <h2 class="text-lg font-black text-slate-900 mb-4 flex items-center gap-2"><span class="text-xl">📈</span> TRENDING</h2>
+                        <div id="dash-trend-list" class="space-y-3"></div>
+                    </div>
+                    <!-- 2. Live Now -->
+                    <div class="bg-white rounded-[2.5rem] p-6 border border-slate-100 shadow-xl">
+                        <h2 class="text-lg font-black text-slate-900 mb-4 flex items-center gap-2"><span class="text-xl">�</span> LIVE NOW</h2>
+                        <div id="dash-live-list" class="space-y-3"></div>
+                    </div>
+                    <!-- 3. Shorts (Trending) -->
+                    <div class="bg-white rounded-[2.5rem] p-6 border border-slate-100 shadow-xl">
+                        <h2 class="text-lg font-black text-slate-900 mb-4 flex items-center gap-2"><span class="text-xl">📱</span> SHORTS</h2>
+                        <div id="dash-shorts-trend-grid" class="grid grid-cols-3 gap-2"></div>
+                    </div>
+                    <!-- 4. Top Viral Shorts -->
+                    <div class="bg-white rounded-[2.5rem] p-6 border border-slate-100 shadow-xl">
+                        <h2 class="text-lg font-black text-slate-900 mb-4 flex items-center gap-2"><span class="text-xl">🔥</span> HOT SHORTS</h2>
+                        <div id="dash-shorts-viral-grid" class="grid grid-cols-3 gap-2"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="section-ranking" class="hidden">
             <div class="flex flex-col md:flex-row justify-between gap-4 mb-8">
                 <input type="text" id="searchInput" oninput="debounceSearch()" placeholder="Search creators..." class="w-full md:w-96 p-4 rounded-[1.5rem] border-2 border-slate-100 bg-white font-bold shadow-sm">
                 <div class="flex bg-slate-100 p-1 rounded-[1.5rem] border border-slate-200">
@@ -863,26 +904,27 @@ const HTML_CONTENT = `
         </div>
     </div>
     <script>
-        let currentTab = 'ranking', currentSort = 'subs', currentCategory = 'all', currentRankData = [], chart = null, historyData = [], currentChartType = 'subs', searchTimer, visibleCount = 100;
+        let currentTab = 'dashboard', currentSort = 'subs', currentCategory = 'all', currentRankData = [], chart = null, historyData = [], currentChartType = 'subs', searchTimer, visibleCount = 100;
         const categoryMap = {"1":"Film & Animation","2":"Autos & Vehicles","10":"Music","15":"Pets & Animals","17":"Sports","19":"Travel & Events","20":"Gaming","22":"People & Blogs","23":"Comedy","24":"Entertainment","25":"News & Politics","26":"Howto & Style","27":"Education","28":"Science & Tech","29":"Nonprofits"};
 
         function formatNum(n) { if (!n) return "0"; let val = parseInt(n); if (val >= 1e9) return (val / 1e9).toFixed(1) + 'B'; if (val >= 1e6) return (val / 1e6).toFixed(1) + 'M'; if (val >= 1e3) return (val / 1e3).toFixed(1) + 'K'; return val.toLocaleString(); }
 
         async function switchTab(t) {
             currentTab = t;
-            ['btn-tab-rank', 'btn-tab-live', 'btn-tab-trend', 'btn-tab-viral', 'btn-tab-shorts'].forEach(id => {
+            ['btn-tab-dashboard', 'btn-tab-rank', 'btn-tab-live', 'btn-tab-trend', 'btn-tab-viral', 'btn-tab-shorts'].forEach(id => {
                const btn = document.getElementById(id);
                if(btn) btn.className = 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600';
             });
             
-            const activeId = t === 'ranking' ? 'btn-tab-rank' : (t === 'live' ? 'btn-tab-live' : (t === 'viral' ? 'btn-tab-viral' : (t === 'shorts' ? 'btn-tab-shorts' : 'btn-tab-trend')));
+            const activeId = t === 'dashboard' ? 'btn-tab-dashboard' : (t === 'ranking' ? 'btn-tab-rank' : (t === 'live' ? 'btn-tab-live' : (t === 'viral' ? 'btn-tab-viral' : (t === 'shorts' ? 'btn-tab-shorts' : 'btn-tab-trend'))));
             if(document.getElementById(activeId)) {
                 if(t === 'viral') document.getElementById(activeId).className = 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all bg-purple-600 text-white shadow-lg';
                 else if(t === 'shorts') document.getElementById(activeId).className = 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all bg-red-600 text-white shadow-lg';
+                else if(t === 'dashboard') document.getElementById(activeId).className = 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all tab-active';
                 else document.getElementById(activeId).className = 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all tab-active';
             }
             
-            ['section-ranking', 'section-live', 'section-trending'].forEach(id => document.getElementById(id).style.display = 'none');
+            ['section-dashboard', 'section-ranking', 'section-live', 'section-trending'].forEach(id => document.getElementById(id).style.display = 'none');
             
             if (t === 'viral' || t === 'shorts') {
                 document.getElementById('section-trending').style.display = 'block'; // Reuse trending grid
@@ -898,7 +940,25 @@ const HTML_CONTENT = `
             const region = document.getElementById('regionSelect').value;
             const search = document.getElementById('searchInput').value;
             
-            if (currentTab === 'ranking') {
+            if (currentTab === 'dashboard') {
+                document.getElementById('dash-rank-body').innerHTML = '<tr><td colspan="3" class="text-center py-10"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-red-600 mx-auto"></div></td></tr>';
+                
+                const [rankRes, trendRes, liveRes, shortsTrendRes, shortsViralRes] = await Promise.all([
+                    fetch(\`/api/ranking?region=\${region}&sort=subs&category=all\`),
+                    fetch(\`/api/trending?region=\${region}&category=all\`),
+                    fetch(\`/api/live-ranking?region=\${region}\`),
+                    fetch('/api/shorts-trending?region=' + region),
+                    fetch('/api/shorts-viral?region=' + region)
+                ]);
+                
+                const rankData = await rankRes.json();
+                const trendData = await trendRes.json();
+                const liveData = await liveRes.json();
+                const shortsTrendData = await shortsTrendRes.json();
+                const shortsViralData = await shortsViralRes.json();
+                
+                renderDashboard(rankData, trendData, liveData, shortsTrendData, shortsViralData);
+            } else if (currentTab === 'ranking') {
                 const res = await fetch(\`/api/ranking?region=\${region}&sort=\${currentSort}&category=\${currentCategory}&search=\${encodeURIComponent(search)}\`);
                 const data = await res.json();
                 currentRankData = data; visibleCount = 100; renderRanking();
@@ -1082,6 +1142,57 @@ const HTML_CONTENT = `
         function debounceSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(loadData, 300); }
         const list = document.getElementById('cat-list'); Object.keys(categoryMap).forEach(id => { const b = document.createElement('button'); b.id = 'cat-' + id; b.innerText = categoryMap[id].toUpperCase(); b.className = "px-5 py-2.5 rounded-2xl text-[11px] font-black bg-white text-slate-400 border border-slate-100 hover:bg-slate-50"; b.onclick = () => changeCategory(id); list.appendChild(b); });
         loadData();
+        function renderDashboard(rankData, trendData, liveData, sTrendData, sViralData) {
+            // 1. Ranking (Top 10)
+            const top10 = rankData.slice(0, 10);
+            document.getElementById('dash-rank-body').innerHTML = top10.map((item, i) => \`
+                <tr onclick="openModal('\${item.id}', '\${item.title.replace(/'/g, "")}', '\${item.thumbnail}', \${item.current_subs}, \${item.current_views}, \${item.growth})" class="group hover:bg-slate-50 transition-all cursor-pointer border-b last:border-0">
+                    <td class="p-3 text-center text-sm font-black text-slate-300 group-hover:text-red-600">\${i+1}</td>
+                    <td class="p-3 flex items-center gap-3">
+                        <img src="\${item.thumbnail}" class="w-8 h-8 rounded-lg shadow-sm object-cover"><div class="font-bold text-xs text-slate-900 line-clamp-1">\${item.title}</div>
+                    </td>
+                    <td class="p-3 text-right font-mono font-bold text-xs text-slate-900">\${formatNum(item.current_subs)}</td>
+                    <td class="p-3 text-right font-mono font-bold text-xs text-slate-400">\${formatNum(item.current_views)}</td>
+                    <td class="p-3 text-right font-black text-xs text-emerald-600">\${item.growth > 0 ? '+' : ''}\${formatNum(item.growth)}</td>
+                </tr>\`).join('');
+
+            // 2. Trending (Top 5 List)
+            document.getElementById('dash-trend-list').innerHTML = trendData.slice(0, 5).map((v, i) => \`
+                <div class="flex gap-3 items-center cursor-pointer group" onclick="window.open('https://youtube.com/watch?v=\${v.id}')">
+                    <img src="\${v.thumbnail}" class="w-16 h-9 rounded-lg object-cover shadow-sm group-hover:scale-105 transition-transform">
+                    <div class="flex-1 min-w-0">
+                        <div class="text-[10px] font-bold text-slate-900 line-clamp-2 leading-tight group-hover:text-indigo-600">\${v.title}</div>
+                        <div class="text-[9px] text-slate-400 truncate">\${v.channel} • \${formatNum(v.views)} views</div>
+                    </div>
+                </div>\`).join('');
+
+            // 3. Live (Top 5 List)
+            document.getElementById('dash-live-list').innerHTML = liveData.slice(0, 5).map(v => \`
+                <div class="flex gap-3 items-center cursor-pointer group" onclick="window.open('https://youtube.com/watch?v=\${v.video_id}')">
+                    <div class="relative w-16 h-9 rounded-lg overflow-hidden shrink-0"><img src="\${v.thumbnail}" class="w-full h-full object-cover group-hover:scale-105 transition-transform"><div class="absolute bottom-0.5 right-0.5 bg-red-600 text-white rounded px-1 text-[6px] font-black">LIVE</div></div>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-[10px] font-bold text-slate-900 line-clamp-1 group-hover:text-red-600">\${v.video_title}</div>
+                        <div class="text-[9px] text-slate-400 truncate">\${v.channel_name} • \${v.viewers.toLocaleString()} watching</div>
+                    </div>
+                </div>\`).join('');
+
+            // 4. Shorts Trending (Top 6 Grid)
+            document.getElementById('dash-shorts-trend-grid').innerHTML = sTrendData.slice(0, 6).map(v => \`
+                <div class="aspect-[9/16] relative rounded-lg overflow-hidden cursor-pointer group" onclick="window.open('https://youtube.com/watch?v=\${v.id}')">
+                    <img src="\${v.thumbnail}" class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500">
+                    <div class="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent"></div>
+                    <div class="absolute bottom-1 left-1 text-white text-[8px] font-bold">\${formatNum(v.views)}</div>
+                </div>\`).join('');
+
+            // 5. Shorts Viral (Top 6 Grid)
+            document.getElementById('dash-shorts-viral-grid').innerHTML = sViralData.slice(0, 6).map(v => \`
+                <div class="aspect-[9/16] relative rounded-lg overflow-hidden cursor-pointer group" onclick="window.open('https://youtube.com/watch?v=\${v.id}')">
+                    <img src="\${v.thumbnail}" class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500">
+                    <div class="absolute top-1 left-1 bg-purple-600 text-[6px] text-white px-1 rounded font-bold">Vf \${v.vf}</div>
+                    <div class="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent"></div>
+                    <div class="absolute bottom-1 left-1 text-white text-[8px] font-bold">\${formatNum(v.views)}</div>
+                </div>\`).join('');
+        }
     </script>
 </body>
 </html>
