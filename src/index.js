@@ -350,8 +350,11 @@ export default {
         if (url.pathname === "/api/shorts-viral") {
             const region = url.searchParams.get("region") || "KR";
             try {
-                const { results } = await env.DB.prepare("SELECT data FROM ShortsCache WHERE type = 'viral' AND region = ? ORDER BY rank ASC").bind(region).all();
-                return new Response(JSON.stringify(results.map(r => JSON.parse(r.data))), { headers: { "Content-Type": "application/json" } });
+                const { results } = await env.DB.prepare("SELECT data FROM ShortsCache WHERE type = 'viral' AND region = ?").bind(region).all();
+                let items = results.map(r => JSON.parse(r.data));
+                // Dynamic Sort: Viral Factor (High to Low)
+                items.sort((a, b) => b.vf - a.vf);
+                return new Response(JSON.stringify(items), { headers: { "Content-Type": "application/json" } });
             } catch (e) {
                 return new Response(JSON.stringify([]), { headers: { "Content-Type": "application/json" } });
             }
@@ -360,8 +363,11 @@ export default {
         if (url.pathname === "/api/shorts-trending") {
             const region = url.searchParams.get("region") || "KR";
             try {
-                const { results } = await env.DB.prepare("SELECT data FROM ShortsCache WHERE type = 'trending' AND region = ? ORDER BY rank ASC").bind(region).all();
-                return new Response(JSON.stringify(results.map(r => JSON.parse(r.data))), { headers: { "Content-Type": "application/json" } });
+                const { results } = await env.DB.prepare("SELECT data FROM ShortsCache WHERE type = 'trending' AND region = ?").bind(region).all();
+                let items = results.map(r => JSON.parse(r.data));
+                // Dynamic Sort: Views (High to Low)
+                items.sort((a, b) => b.views - a.views);
+                return new Response(JSON.stringify(items), { headers: { "Content-Type": "application/json" } });
             } catch (e) {
                 return new Response(JSON.stringify([]), { headers: { "Content-Type": "application/json" } });
             }
@@ -382,7 +388,15 @@ export default {
                 last_live_date TEXT,
                 region TEXT
             )`).run();
-            return new Response("LiveStreamers table initialized.");
+            await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ShortsCache (
+                video_id TEXT,
+                type TEXT,
+                data TEXT,
+                region TEXT,
+                rank INTEGER,
+                PRIMARY KEY (video_id, type, region)
+            )`).run();
+            return new Response("Tables initialized (LiveStreamers, ShortsCache).");
         }
 
         if (url.pathname === "/api/optimize-db") {
@@ -583,10 +597,14 @@ export default {
             }
 
             // 2. Trending Shorts Logic
+            // Ensure Table Exists (Lazy Init)
+            // Table init handled at start of function
+
             let trendItems = [];
             const queryMap = { 'KR': '쇼츠', 'JP': 'ショート', 'IN': '#shorts', 'BR': '#shorts', 'ID': '#shorts' };
             const queryT = queryMap[region] || '#shorts';
-            const searchUrlT = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(queryT)}&type=video&videoDuration=short&regionCode=${region}&order=viewCount&maxResults=50`;
+            // CHANGE: Use 'relevance' (default) instead of 'viewCount' to get a mix of popular & recent, preventing "1 foreign video" dominance
+            const searchUrlT = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(queryT)}&type=video&videoDuration=short&regionCode=${region}&order=relevance&maxResults=50`;
             const searchResT = await this.fetchWithFallback(searchUrlT, env);
             const searchDataT = await searchResT.json();
 
@@ -596,6 +614,7 @@ export default {
                     const vRes = await this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/videos?part=statistics,snippet&id=${videoIds}`, env);
                     const vData = await vRes.json();
                     if (vData.items) {
+
                         trendItems = vData.items.filter(v => {
                             if (region === 'KR') {
                                 const text = (v.snippet.title + " " + v.snippet.description + " " + v.snippet.channelTitle).toLowerCase();
@@ -606,6 +625,8 @@ export default {
                             id: v.id, title: v.snippet.title, channel: v.snippet.channelTitle, thumbnail: v.snippet.thumbnails.high?.url || v.snippet.thumbnails.default.url, views: parseInt(v.statistics.viewCount || 0), date: v.snippet.publishedAt.slice(0, 10), vf: 0, categoryId: v.snippet.categoryId || "0"
                         }));
                         trendItems.sort((a, b) => b.views - a.views);
+                        // DEBUG: Log count
+                        await env.DB.prepare("INSERT INTO DebugLog (message) VALUES (?)").bind(`SyncShorts: Found ${trendItems.length} trending items for ${region}`).run();
                     }
                 }
             }
@@ -613,7 +634,8 @@ export default {
             // 2. Viral Shorts Logic
             let viralItems = [];
             const queryV = queryMap[region] || '#shorts';
-            const searchUrlV = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(queryV)}&type=video&videoDuration=short&regionCode=${region}&order=viewCount&maxResults=50`;
+            // DIFFERENT STRATEGY: For Viral, we search by 'date' to find fresh, rising content instead of just top views
+            const searchUrlV = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(queryV)}&type=video&videoDuration=short&regionCode=${region}&order=date&maxResults=50`;
             const searchResV = await this.fetchWithFallback(searchUrlV, env);
             const searchDataV = await searchResV.json();
 
@@ -637,18 +659,26 @@ export default {
                             const text = (v.snippet.title + " " + v.snippet.description + " " + v.snippet.channelTitle).toLowerCase();
                             return /[ㄱ-ㅎ|ㅏ-ㅣ|가-힣]/.test(text);
                         }
+
                         return true;
                     }).map(v => {
                         const views = parseInt(v.statistics.viewCount || 0);
                         const subs = subMap[v.snippet.channelId] || 1;
-                        const vf = (views / subs);
+                        const vf = subs > 0 ? (views / subs) : 0;
                         return { id: v.id, title: v.snippet.title, channel: v.snippet.channelTitle, thumbnail: v.snippet.thumbnails.high?.url || v.snippet.thumbnails.default.url, views: views, subs: subs, vf: parseFloat(vf.toFixed(2)), date: v.snippet.publishedAt.slice(0, 10), categoryId: v.snippet.categoryId || "0" };
                     });
                     viralItems.sort((a, b) => b.vf - a.vf);
+                    // DEBUG: Log count
+                    await env.DB.prepare("INSERT INTO DebugLog (message) VALUES (?)").bind(`SyncShorts: Found ${viralItems.length} viral items for ${region}`).run();
                 }
             }
 
             // 3. Save to DB
+            // 3. Save to DB (Accumulate & Prune)
+            // Note: We do NOT delete all for region anymore. Using INSERT OR REPLACE.
+
+            // 3. Save to DB (Clear & Replace Strategy)
+            // Remove OLD data for this region to prevent stale items (Aggressive Display Fix)
             await env.DB.prepare("DELETE FROM ShortsCache WHERE region = ?").bind(region).run();
 
             let stmts = [];
@@ -662,7 +692,13 @@ export default {
                 stmts.push(env.DB.prepare("INSERT INTO ShortsCache (video_id, type, data, region, rank) VALUES (?, ?, ?, ?, ?)").bind(item.id, 'viral', JSON.stringify(item), region, idx));
             });
 
-            if (stmts.length > 0) await env.DB.batch(stmts);
+            if (stmts.length > 0) {
+                // Batch limit workaround (D1 limit is often 128)
+                const BATCH_SIZE = 50;
+                for (let i = 0; i < stmts.length; i += BATCH_SIZE) {
+                    await env.DB.batch(stmts.slice(i, i + BATCH_SIZE));
+                }
+            }
 
         } catch (e) {
             console.error("Trends Sync Failed", e);
