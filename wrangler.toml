@@ -2,6 +2,10 @@ name = "tube-trend-pro"
 main = "src/index.js"
 compatibility_date = "2026-01-12"
 
+[dev]
+ip = "0.0.0.0"
+port = 8787
+
 [[d1_databases]]
 binding = "DB"
 database_name = "tube-db"

@@ -582,7 +582,9 @@ export default {
 
             // 2. Trending Shorts Logic
             let trendItems = [];
-            const searchUrlT = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent('쇼츠')}&type=video&videoDuration=short&regionCode=${region}&order=viewCount&maxResults=50`;
+            const queryMap = { 'KR': '쇼츠', 'JP': 'ショート', 'IN': '#shorts', 'BR': '#shorts', 'ID': '#shorts' };
+            const queryT = queryMap[region] || '#shorts';
+            const searchUrlT = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(queryT)}&type=video&videoDuration=short&regionCode=${region}&order=viewCount&maxResults=50`;
             const searchResT = await this.fetchWithFallback(searchUrlT, env);
             const searchDataT = await searchResT.json();
 
@@ -608,7 +610,8 @@ export default {
 
             // 2. Viral Shorts Logic
             let viralItems = [];
-            const searchUrlV = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent('쇼츠')}&type=video&videoDuration=short&regionCode=${region}&order=viewCount&maxResults=50`;
+            const queryV = queryMap[region] || '#shorts';
+            const searchUrlV = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(queryV)}&type=video&videoDuration=short&regionCode=${region}&order=viewCount&maxResults=50`;
             const searchResV = await this.fetchWithFallback(searchUrlV, env);
             const searchDataV = await searchResV.json();
 
