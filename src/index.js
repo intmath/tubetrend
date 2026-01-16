@@ -98,6 +98,7 @@
                     SELECT c.id, c.title, c.category, c.country, c.thumbnail, 
                            MAX(t.subs) AS current_subs, MAX(t.views) AS current_views,
                            (MAX(t.subs) - IFNULL(MAX(y.subs), MAX(t.subs))) AS growth,
+                           (MAX(t.views) - IFNULL(MAX(y.views), MAX(t.views))) AS view_growth,
                            ROW_NUMBER() OVER (ORDER BY ${orderByColumn} DESC) as absolute_rank
                     FROM Channels c
                     JOIN ChannelStats t ON c.id = t.channel_id AND t.rank_date = (SELECT d FROM LatestDate)
@@ -779,7 +780,7 @@ const HTML_CONTENT = `
                     <div class="overflow-x-auto">
                         <table class="w-full text-left min-w-[600px]">
                             <thead class="bg-slate-50 border-b text-slate-400 font-black text-[10px] uppercase tracking-widest">
-                                <tr><th class="p-4 rounded-tl-xl text-center w-20">Rank</th><th class="p-4">Channel</th><th class="p-4 text-right">Subs</th><th class="p-4 text-right">Total Views</th><th class="p-4 text-right rounded-tr-xl">24h Growth</th></tr>
+                                <tr><th class="p-4 rounded-tl-xl text-center w-20">Rank</th><th class="p-4">Channel</th><th class="p-4 text-right">Subs</th><th class="p-4 text-right">Total Views</th><th class="p-4 text-right">24h Subs Growth</th><th class="p-4 text-right rounded-tr-xl">24h View Growth</th></tr>
                             </thead>
                             <tbody id="dash-rank-body" class="divide-y divide-slate-50"></tbody>
                         </table>
@@ -823,7 +824,7 @@ const HTML_CONTENT = `
                 <div class="overflow-x-auto">
                     <table class="w-full text-left min-w-[850px]">
                         <thead class="bg-slate-50 border-b text-slate-400 font-black text-[10px] uppercase tracking-widest">
-                            <tr><th class="p-6 text-center w-24">Rank</th><th class="p-6">Channel</th><th class="p-6 text-right">Subs</th><th class="p-6 text-right">Total Views</th><th class="p-6 text-right">24h Growth</th></tr>
+                            <tr><th class="p-6 text-center w-24">Rank</th><th class="p-6">Channel</th><th class="p-6 text-right">Subs</th><th class="p-6 text-right">Total Views</th><th class="p-6 text-right" id="rank-growth-header">24h Growth</th></tr>
                         </thead>
                         <tbody id="table-body" class="divide-y divide-slate-50"></tbody>
                     </table>
@@ -1012,7 +1013,12 @@ const HTML_CONTENT = `
 
         function renderRanking() {
             const dataToShow = currentRankData.slice(0, visibleCount);
-            document.getElementById('table-body').innerHTML = dataToShow.map(item => \`
+            const isSubs = currentSort === 'subs';
+            document.getElementById('rank-growth-header').innerText = isSubs ? "24h Subs Growth" : "24h View Growth";
+            
+            document.getElementById('table-body').innerHTML = dataToShow.map(item => {
+                const growthVal = isSubs ? item.growth : item.view_growth;
+                return \`
                 <tr onclick="openModal('\${item.id}', '\${item.title.replace(/'/g, "")}', '\${item.thumbnail}', \${item.current_subs}, \${item.current_views}, \${item.growth})" class="group hover:bg-slate-50 transition-all cursor-pointer border-b">
                     <td class="p-6 text-center text-xl font-black text-slate-200 group-hover:text-red-600">\${item.absolute_rank}</td>
                     <td class="p-6 flex items-center gap-5">
@@ -1020,8 +1026,9 @@ const HTML_CONTENT = `
                     </td>
                     <td class="p-6 text-right font-mono font-black text-slate-900">\${item.current_subs.toLocaleString()}</td>
                     <td class="p-6 text-right font-mono font-bold text-slate-400">\${item.current_views.toLocaleString()}</td>
-                    <td class="p-6 text-right text-emerald-600 font-black text-lg">\${item.growth > 0 ? '+' : ''}\${item.growth.toLocaleString()}</td>
-                </tr>\`).join('');
+                    <td class="p-6 text-right text-emerald-600 font-black text-lg">\${growthVal > 0 ? '+' : ''}\${growthVal.toLocaleString()}</td>
+                </tr>\`;
+            }).join('');
             document.getElementById('load-more-container').classList.toggle('hidden', currentRankData.length <= visibleCount);
         }
 
@@ -1153,7 +1160,8 @@ const HTML_CONTENT = `
                     </td>
                     <td class="p-3 text-right font-mono font-bold text-xs text-slate-900">\${formatNum(item.current_subs)}</td>
                     <td class="p-3 text-right font-mono font-bold text-xs text-slate-400">\${formatNum(item.current_views)}</td>
-                    <td class="p-3 text-right font-black text-xs text-emerald-600">\${item.growth > 0 ? '+' : ''}\${formatNum(item.growth)}</td>
+                    <td class="p-3 text-right font-black text-xs text-red-500">\${item.growth > 0 ? '+' : ''}\${item.growth.toLocaleString()}</td>
+                    <td class="p-3 text-right font-black text-xs text-emerald-600">\${item.view_growth > 0 ? '+' : ''}\${item.view_growth.toLocaleString()}</td>
                 </tr>\`).join('');
 
             // 2. Trending (Top 5 List)
