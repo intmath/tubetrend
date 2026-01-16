@@ -69,7 +69,7 @@ export default {
 
         // 1. 실시간 라이브 API
         if (url.pathname === "/api/live-ranking") {
-            const { results } = await env.DB.prepare(`SELECT channel_name, video_title, viewers, thumbnail, video_id FROM LiveRankings WHERE region = ? ORDER BY viewers DESC LIMIT 100`).bind(region).all();
+            const { results } = await env.DB.prepare(`SELECT channel_name, video_title, viewers, thumbnail, video_id, category FROM LiveRankings WHERE region = ? ORDER BY viewers DESC LIMIT 100`).bind(region).all();
             return new Response(JSON.stringify(results || []), { headers: { "Content-Type": "application/json" } });
         }
 
@@ -466,15 +466,17 @@ export default {
         finalLiveItems.sort((a, b) => parseInt(b.liveStreamingDetails?.concurrentViewers || 0) - parseInt(a.liveStreamingDetails?.concurrentViewers || 0));
         const top100 = finalLiveItems.slice(0, 100);
 
-        await env.DB.prepare("DELETE FROM LiveRankings WHERE region = ?").bind(region).run();
+        await env.DB.prepare("DROP TABLE IF EXISTS LiveRankings").run();
+        await env.DB.prepare("CREATE TABLE LiveRankings (channel_name TEXT, video_title TEXT, viewers INTEGER, thumbnail TEXT, video_id TEXT, region TEXT, category TEXT)").run();
 
-        const stmts = top100.map(item => env.DB.prepare(`INSERT INTO LiveRankings (channel_name, video_title, viewers, thumbnail, video_id, region) VALUES (?, ?, ?, ?, ?, ?)`).bind(
+        const stmts = top100.map(item => env.DB.prepare(`INSERT INTO LiveRankings (channel_name, video_title, viewers, thumbnail, video_id, region, category) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(
             item.snippet.channelTitle,
             item.snippet.title,
             parseInt(item.liveStreamingDetails?.concurrentViewers || 0),
             item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default.url,
             item.id,
-            region
+            region,
+            item.snippet.categoryId || "0"
         ));
         if (stmts.length > 0) await env.DB.batch(stmts);
 
@@ -601,7 +603,7 @@ export default {
                             }
                             return true;
                         }).map(v => ({
-                            id: v.id, title: v.snippet.title, channel: v.snippet.channelTitle, thumbnail: v.snippet.thumbnails.high?.url || v.snippet.thumbnails.default.url, views: parseInt(v.statistics.viewCount || 0), date: v.snippet.publishedAt.slice(0, 10), vf: 0 // placeholder
+                            id: v.id, title: v.snippet.title, channel: v.snippet.channelTitle, thumbnail: v.snippet.thumbnails.high?.url || v.snippet.thumbnails.default.url, views: parseInt(v.statistics.viewCount || 0), date: v.snippet.publishedAt.slice(0, 10), vf: 0, categoryId: v.snippet.categoryId || "0"
                         }));
                         trendItems.sort((a, b) => b.views - a.views);
                     }
@@ -640,7 +642,7 @@ export default {
                         const views = parseInt(v.statistics.viewCount || 0);
                         const subs = subMap[v.snippet.channelId] || 1;
                         const vf = (views / subs);
-                        return { id: v.id, title: v.snippet.title, channel: v.snippet.channelTitle, thumbnail: v.snippet.thumbnails.high?.url || v.snippet.thumbnails.default.url, views: views, subs: subs, vf: parseFloat(vf.toFixed(2)), date: v.snippet.publishedAt.slice(0, 10) };
+                        return { id: v.id, title: v.snippet.title, channel: v.snippet.channelTitle, thumbnail: v.snippet.thumbnails.high?.url || v.snippet.thumbnails.default.url, views: views, subs: subs, vf: parseFloat(vf.toFixed(2)), date: v.snippet.publishedAt.slice(0, 10), categoryId: v.snippet.categoryId || "0" };
                     });
                     viralItems.sort((a, b) => b.vf - a.vf);
                 }
@@ -852,7 +854,7 @@ const HTML_CONTENT = `
                 document.getElementById('section-' + t).style.display = 'block';
             }
             
-            document.getElementById('cat-list').style.display = (t === 'live' || t === 'viral') ? 'none' : 'flex';
+            document.getElementById('cat-list').style.display = (t === 'dashboard') ? 'none' : 'flex';
             loadData();
         }
 
@@ -865,21 +867,24 @@ const HTML_CONTENT = `
                 const data = await res.json();
                 currentRankData = data; visibleCount = 100; renderRanking();
             } else if (currentTab === 'live') {
-                const res = await fetch(\`/api/live-ranking?region=\${region}\`);
-                const data = await res.json();
+                const res = await fetch('/api/live-ranking?region=' + region);
+                let data = await res.json();
+                if(currentCategory !== 'all') data = data.filter(i => String(i.category) === String(currentCategory));
                 renderLive(data);
             } else if (currentTab === 'viral') {
                 document.getElementById('trend-grid').innerHTML = '<div class="col-span-full text-center py-20"><div class="animate-spin rounded-full h-12 w-12 border-b-4 border-purple-600 mx-auto"></div></div>';
-                const res = await fetch(\`/api/shorts-viral?region=\${region}\`);
-                const data = await res.json();
+                const res = await fetch('/api/shorts-viral?region=' + region);
+                let data = await res.json();
+                if(currentCategory !== 'all') data = data.filter(i => String(i.categoryId) === String(currentCategory));
                 renderViral(data);
             } else if (currentTab === 'shorts') {
                 document.getElementById('trend-grid').innerHTML = '<div class="col-span-full text-center py-20"><div class="animate-spin rounded-full h-12 w-12 border-b-4 border-red-600 mx-auto"></div></div>';
-                const res = await fetch(\`/api/shorts-trending?region=\${region}\`);
-                const data = await res.json();
+                const res = await fetch('/api/shorts-trending?region=' + region);
+                let data = await res.json();
+                if(currentCategory !== 'all') data = data.filter(i => String(i.categoryId) === String(currentCategory));
                 renderTrending(data);
             } else {
-                let endpoint = \`/api/trending?region=\${region}&category=\${currentCategory}\`;
+                let endpoint = '/api/trending?region=' + region + '&category=' + currentCategory;
                 const res = await fetch(endpoint);
                 const data = await res.json();
                 renderTrending(data);
