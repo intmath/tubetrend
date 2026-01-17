@@ -427,7 +427,7 @@
         // 1. Parallel Execution: Discovery (Search) & Saved Channel Check (Activities)
         const discoveryPromise = (async () => {
             try {
-                const res = await this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&eventType=live&regionCode=${region}&q=${encodeURIComponent(region === 'KR' ? '라이브|실시간' : 'live')}&maxResults=50`, env);
+                const res = await this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&eventType=live&regionCode=${region}&q=${encodeURIComponent(region === 'KR' ? '라이브|실시간' : 'live')}&order=viewCount&maxResults=50`, env);
                 const data = await res.json();
                 return data.items || [];
             } catch (e) {
@@ -728,7 +728,7 @@ const HTML_CONTENT = `
 <body class="pb-10">
     <nav class="sticky top-0 z-50 bg-white/80 backdrop-blur-xl border-b shadow-sm px-6 py-4">
         <div class="max-w-6xl mx-auto flex justify-between items-center">
-            <h1 class="text-2xl font-black tracking-tighter uppercase italic">TUBE <span class="text-red-600">TREND PRO</span></h1>
+            <h1 class="text-2xl font-black tracking-tighter uppercase italic cursor-pointer hover:opacity-80 transition-opacity" onclick="switchTab('dashboard')">TUBE <span class="text-red-600">TREND PRO</span></h1>
             <div class="flex items-center gap-2">
                 <select id="regionSelect" onchange="loadData()" class="bg-slate-100 border-none rounded-2xl px-3 py-2 text-xs font-bold outline-none cursor-pointer">
                     <option value="KR" selected>🇰🇷 Korea</option><option value="US">🇺🇸 USA</option><option value="JP">🇯🇵 Japan</option>
@@ -992,7 +992,7 @@ const HTML_CONTENT = `
             const grid = document.getElementById('trend-grid');
             if(!items || items.length === 0) { grid.innerHTML = '<div class="col-span-full text-center py-10 text-slate-400 font-bold">No High-Viral Shorts Found</div>'; return; }
             grid.innerHTML = items.map((item, i) => \`
-                <div class="group relative bg-white rounded-xl overflow-hidden shadow-sm hover:shadow-xl transition-all duration-300 hover:-translate-y-1 ring-1 ring-slate-100">
+                <div class="group relative bg-white rounded-xl overflow-hidden shadow-sm hover:shadow-xl transition-all duration-300 hover:-translate-y-1 ring-1 ring-slate-100 cursor-pointer" onclick="window.open('https://youtube.com/watch?v=\${item.id}')">
                     <div class="relative aspect-[9/16]">
                         <img src="\${item.thumbnail}" class="w-full h-full object-cover" loading="lazy">
                         <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-60"></div>
