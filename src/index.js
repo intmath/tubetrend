@@ -891,7 +891,7 @@ const HTML_CONTENT = `
             <div class="flex flex-col gap-10">
                 <!-- Top Rankings -->
                 <div class="bg-white rounded-[2.5rem] p-8 border border-slate-100 shadow-xl">
-                    <h2 class="text-xl font-black text-slate-900 mb-6 flex items-center gap-2"><span class="text-2xl">🏆</span> TOP 10 CHANNELS</h2>
+                    <h2 class="text-xl font-black text-slate-900 mb-6 flex items-center gap-2"><span class="text-2xl">🏆</span> TOP 20 CHANNELS</h2>
                     <div class="overflow-x-auto">
                         <table class="w-full text-left min-w-[600px]">
                             <thead class="bg-slate-50 border-b text-slate-400 font-black text-[10px] uppercase tracking-widest">
@@ -901,27 +901,27 @@ const HTML_CONTENT = `
                         </table>
                     </div>
                 </div>
-                <!-- 4-Quadrant Grid -->
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- 4-Quadrant Grid Wrapper -->
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     <!-- 1. Trending -->
                     <div class="bg-white rounded-[2.5rem] p-6 border border-slate-100 shadow-xl">
                         <h2 class="text-lg font-black text-slate-900 mb-4 flex items-center gap-2"><span class="text-xl">📈</span> TRENDING</h2>
-                        <div id="dash-trend-list" class="space-y-3"></div>
+                        <div id="dash-trend-list" class="grid grid-cols-4 gap-3"></div>
                     </div>
                     <!-- 2. Live Now -->
                     <div class="bg-white rounded-[2.5rem] p-6 border border-slate-100 shadow-xl">
-                        <h2 class="text-lg font-black text-slate-900 mb-4 flex items-center gap-2"><span class="text-xl">�</span> LIVE NOW</h2>
-                        <div id="dash-live-list" class="space-y-3"></div>
+                        <h2 class="text-lg font-black text-slate-900 mb-4 flex items-center gap-2"><span class="text-xl">🔴</span> LIVE NOW</h2>
+                        <div id="dash-live-list" class="grid grid-cols-4 gap-3"></div>
                     </div>
                     <!-- 3. Shorts (Trending) -->
                     <div class="bg-white rounded-[2.5rem] p-6 border border-slate-100 shadow-xl">
                         <h2 class="text-lg font-black text-slate-900 mb-4 flex items-center gap-2"><span class="text-xl">📱</span> SHORTS</h2>
-                        <div id="dash-shorts-trend-grid" class="grid grid-cols-3 gap-2"></div>
+                        <div id="dash-shorts-trend-grid" class="grid grid-cols-4 gap-3"></div>
                     </div>
                     <!-- 4. Top Viral Shorts -->
                     <div class="bg-white rounded-[2.5rem] p-6 border border-slate-100 shadow-xl">
                         <h2 class="text-lg font-black text-slate-900 mb-4 flex items-center gap-2"><span class="text-xl">🔥</span> HOT SHORTS</h2>
-                        <div id="dash-shorts-viral-grid" class="grid grid-cols-3 gap-2"></div>
+                        <div id="dash-shorts-viral-grid" class="grid grid-cols-4 gap-3"></div>
                     </div>
                 </div>
             </div>
@@ -1288,55 +1288,67 @@ const HTML_CONTENT = `
         const list = document.getElementById('cat-list'); Object.keys(categoryMap).forEach(id => { const b = document.createElement('button'); b.id = 'cat-' + id; b.innerText = categoryMap[id].toUpperCase(); b.className = "px-5 py-2.5 rounded-2xl text-[11px] font-black bg-white text-slate-400 border border-slate-100 hover:bg-slate-50"; b.onclick = () => changeCategory(id); list.appendChild(b); });
         loadData();
         function renderDashboard(rankData, trendData, liveData, sTrendData, sViralData) {
-            // 1. Ranking (Top 10)
-            const top10 = rankData.slice(0, 10);
+            // 1. Ranking (Top 20)
+            const top10 = rankData.slice(0, 20);
             document.getElementById('dash-rank-body').innerHTML = top10.map((item, i) => \`
-                <tr onclick="openModal('\${item.id}', '\${item.title.replace(/'/g, "")}', '\${item.thumbnail}', \${item.current_subs}, \${item.current_views}, \${item.growth})" class="group hover:bg-slate-50 transition-all cursor-pointer border-b last:border-0">
-                    <td class="p-3 text-center text-sm font-black text-slate-300 group-hover:text-red-600">\${i+1}</td>
-                    <td class="p-3 flex items-center gap-3">
+                <tr onclick="openModal('\${item.id}', '\${item.title.replace(/'/g, "")}', '\${item.thumbnail}', \${item.current_subs}, \${item.current_views}, \${item.growth})" class="group hover:bg-slate-50 transition-all cursor-pointer">
+                    <td class="p-2 text-center text-sm font-black text-slate-300 group-hover:text-red-600">\${i+1}</td>
+                    <td class="p-2 flex items-center gap-3">
                         <img src="\${item.thumbnail}" class="w-8 h-8 rounded-lg shadow-sm object-cover"><div class="font-bold text-xs text-slate-900 line-clamp-1">\${item.title}</div>
                     </td>
-                    <td class="p-3 text-right font-mono font-bold text-xs text-slate-900">\${formatNum(item.current_subs)}</td>
-                    <td class="p-3 text-right font-mono font-bold text-xs text-slate-400">\${formatNum(item.current_views)}</td>
-                    <td class="p-3 text-right font-black text-xs text-red-500">\${item.growth > 0 ? '+' : ''}\${item.growth.toLocaleString()}</td>
-                    <td class="p-3 text-right font-black text-xs text-emerald-600">\${item.view_growth > 0 ? '+' : ''}\${item.view_growth.toLocaleString()}</td>
+                    <td class="p-2 text-right font-mono font-bold text-xs text-slate-900">\${formatNum(item.current_subs)}</td>
+                    <td class="p-2 text-right font-mono font-bold text-xs text-slate-400">\${formatNum(item.current_views)}</td>
+                    <td class="p-2 text-right font-black text-xs text-red-500">\${item.growth > 0 ? '+' : ''}\${item.growth.toLocaleString()}</td>
+                    <td class="p-2 text-right font-black text-xs text-emerald-600">\${item.view_growth > 0 ? '+' : ''}\${item.view_growth.toLocaleString()}</td>
                 </tr>\`).join('');
 
-            // 2. Trending (Top 5 List)
-            document.getElementById('dash-trend-list').innerHTML = trendData.slice(0, 5).map((v, i) => \`
-                <div class="flex gap-3 items-center cursor-pointer group" onclick="window.open('https://youtube.com/watch?v=\${v.id}')">
-                    <img src="\${v.thumbnail}" class="w-16 h-9 rounded-lg object-cover shadow-sm group-hover:scale-105 transition-transform">
-                    <div class="flex-1 min-w-0">
-                        <div class="text-[10px] font-bold text-slate-900 line-clamp-2 leading-tight group-hover:text-indigo-600">\${v.title}</div>
+            // 2. Trending (Top 16 Grid)
+            document.getElementById('dash-trend-list').innerHTML = trendData.slice(0, 16).map((v, i) => \`
+                <div class="cursor-pointer group" onclick="window.open('https://youtube.com/watch?v=\${v.id}')">
+                    <div class="relative aspect-video rounded-xl overflow-hidden mb-2 shadow-sm">
+                        <img src="\${v.thumbnail}" class="w-full h-full object-cover group-hover:scale-105 transition-transform">
+                    </div>
+                    <div class="px-1">
+                        <div class="text-[11px] font-bold text-slate-900 line-clamp-2 leading-tight group-hover:text-indigo-600 mb-1">\${v.title}</div>
                         <div class="text-[9px] text-slate-400 truncate">\${v.channel} • \${formatNum(v.views)} views</div>
                     </div>
                 </div>\`).join('');
 
-            // 3. Live (Top 5 List)
-            document.getElementById('dash-live-list').innerHTML = liveData.slice(0, 5).map(v => \`
-                <div class="flex gap-3 items-center cursor-pointer group" onclick="window.open('https://youtube.com/watch?v=\${v.video_id}')">
-                    <div class="relative w-16 h-9 rounded-lg overflow-hidden shrink-0"><img src="\${v.thumbnail}" class="w-full h-full object-cover group-hover:scale-105 transition-transform"><div class="absolute bottom-0.5 right-0.5 bg-red-600 text-white rounded px-1 text-[6px] font-black">LIVE</div></div>
-                    <div class="flex-1 min-w-0">
-                        <div class="text-[10px] font-bold text-slate-900 line-clamp-1 group-hover:text-red-600">\${v.video_title}</div>
-                        <div class="text-[9px] text-slate-400 truncate">\${v.channel_name} • \${v.viewers.toLocaleString()} watching</div>
+            // 3. Live (Top 16 Grid)
+            document.getElementById('dash-live-list').innerHTML = liveData.slice(0, 16).map(v => \`
+                <div class="cursor-pointer group" onclick="window.open('https://youtube.com/watch?v=\${v.video_id}')">
+                    <div class="relative aspect-video rounded-xl overflow-hidden mb-2 shadow-sm">
+                        <img src="\${v.thumbnail}" class="w-full h-full object-cover group-hover:scale-105 transition-transform">
+                        <div class="absolute top-1.5 left-1.5 bg-red-600 text-white rounded px-1.5 py-0.5 text-[8px] font-black">LIVE</div>
+                        <div class="absolute bottom-1.5 right-1.5 bg-black/60 text-white rounded px-1.5 py-0.5 text-[8px] font-bold">\${v.viewers.toLocaleString()}명</div>
+                    </div>
+                    <div class="px-1">
+                        <div class="text-[11px] font-bold text-slate-900 line-clamp-1 group-hover:text-red-600 mb-1">\${v.video_title}</div>
+                        <div class="text-[9px] text-slate-400 truncate">\${v.channel_name}</div>
                     </div>
                 </div>\`).join('');
 
-            // 4. Shorts Trending (Top 6 Grid)
-            document.getElementById('dash-shorts-trend-grid').innerHTML = sTrendData.slice(0, 6).map(v => \`
-                <div class="aspect-[9/16] relative rounded-lg overflow-hidden cursor-pointer group" onclick="window.open('https://youtube.com/watch?v=\${v.id}')">
+            // 4. Shorts Trending (Top 16 Grid)
+            document.getElementById('dash-shorts-trend-grid').innerHTML = sTrendData.slice(0, 16).map(v => \`
+                <div class="aspect-[9/16] relative rounded-xl overflow-hidden cursor-pointer group shadow-sm" onclick="window.open('https://youtube.com/watch?v=\${v.id}')">
                     <img src="\${v.thumbnail}" class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500">
-                    <div class="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent"></div>
-                    <div class="absolute bottom-1 left-1 text-white text-[8px] font-bold">\${formatNum(v.views)}</div>
+                    <div class="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-60 group-hover:opacity-80 transition-opacity"></div>
+                    <div class="absolute bottom-2 left-2 text-white">
+                        <div class="text-[10px] font-black drop-shadow-md">\${formatNum(v.views)}</div>
+                        <div class="text-[8px] font-bold opacity-90 truncate w-20">\${v.title}</div>
+                    </div>
                 </div>\`).join('');
 
-            // 5. Shorts Viral (Top 6 Grid)
-            document.getElementById('dash-shorts-viral-grid').innerHTML = sViralData.slice(0, 6).map(v => \`
-                <div class="aspect-[9/16] relative rounded-lg overflow-hidden cursor-pointer group" onclick="window.open('https://youtube.com/watch?v=\${v.id}')">
+            // 5. Viral Shorts (Top 16 Grid)
+            document.getElementById('dash-shorts-viral-grid').innerHTML = sViralData.slice(0, 16).map((v, i) => \`
+                <div class="aspect-[9/16] relative rounded-xl overflow-hidden cursor-pointer group shadow-sm ring-2 ring-purple-100 hover:ring-purple-400 transition-all" onclick="window.open('https://youtube.com/watch?v=\${v.id}')">
                     <img src="\${v.thumbnail}" class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500">
-                    <div class="absolute top-1 left-1 bg-purple-600 text-[6px] text-white px-1 rounded font-bold">Vf \${v.vf}</div>
-                    <div class="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent"></div>
-                    <div class="absolute bottom-1 left-1 text-white text-[8px] font-bold">\${formatNum(v.views)}</div>
+                    <div class="absolute top-0 right-0 bg-purple-600 text-white text-[9px] font-black px-2 py-1 rounded-bl-xl shadow-lg z-10">\${i+1}</div>
+                    <div class="absolute inset-0 bg-gradient-to-t from-purple-900/80 via-transparent to-transparent opacity-80 group-hover:opacity-100 transition-opacity"></div>
+                    <div class="absolute bottom-2 left-2 text-white">
+                        <div class="text-[12px] font-black text-yellow-300 drop-shadow-md">⚡ \${v.vf}</div>
+                        <div class="text-[8px] font-bold opacity-90 truncate w-20">\${v.title}</div>
+                    </div>
                 </div>\`).join('');
         }
     </script>
