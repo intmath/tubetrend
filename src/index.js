@@ -434,14 +434,22 @@
 
         // 1. Parallel Execution: Discovery (Search) & Saved Channel Check (Activities)
         const discoveryPromise = (async () => {
-            try {
-                const res = await this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&eventType=live&regionCode=${region}&q=${encodeURIComponent(region === 'KR' ? '라이브|실시간' : (region === 'JP' ? 'ライブ|生放送' : 'live'))}&order=viewCount&maxResults=50`, env);
-                const data = await res.json();
-                return data.items || [];
-            } catch (e) {
-                console.error("Discovery failed", e);
-                return [];
+            let allItems = [];
+            let nextToken = "";
+            // Fetch up to 4 pages (approx 200 items) to ensure enough candidates after filtering
+            for (let i = 0; i < 4; i++) {
+                try {
+                    const res = await this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&eventType=live&regionCode=${region}&q=${encodeURIComponent(region === 'KR' ? '라이브|실시간' : (region === 'JP' ? 'ライブ|生放送' : 'live'))}&order=viewCount&maxResults=50&pageToken=${nextToken}`, env);
+                    const data = await res.json();
+                    if (data.items) allItems.push(...data.items);
+                    nextToken = data.nextPageToken;
+                    if (!nextToken) break;
+                } catch (e) {
+                    console.error("Discovery failed", e);
+                    break;
+                }
             }
+            return allItems;
         })();
 
         const activitiesCheckPromise = (async () => {
