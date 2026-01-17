@@ -183,10 +183,18 @@
             // Determine Country: If Custom Provided & Not Auto -> Use it. Else -> Use API Country (fallback to KR)
             const finalCountry = (customCountry && customCountry !== 'AUTO') ? customCountry : (item.snippet.country || "KR");
 
+            const trackLive = url.searchParams.get("trackLive") === 'true';
+
             await env.DB.batch([
                 env.DB.prepare(`INSERT INTO Channels (id, title, country, category, thumbnail) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET title=excluded.title, country=excluded.country`).bind(item.id, item.snippet.title, finalCountry, item.snippet.categoryId || "0", item.snippet.thumbnails.default.url),
                 env.DB.prepare(`INSERT OR REPLACE INTO ChannelStats (channel_id, subs, views, rank_date) VALUES (?, ?, ?, ?)`).bind(item.id, parseInt(item.statistics.subscriberCount || 0), parseInt(item.statistics.viewCount || 0), this.getKSTDate())
             ]);
+
+            // Conditionally add to LiveStreamers based on user choice
+            if (trackLive) {
+                await env.DB.prepare(`INSERT OR IGNORE INTO LiveStreamers (channel_id, title, thumbnail, region, last_live_date) VALUES (?, ?, ?, ?, ?)`).bind(item.id, item.snippet.title, item.snippet.thumbnails.default.url, finalCountry, this.getKSTDate()).run();
+            }
+
             return new Response(JSON.stringify({ success: true, title: item.snippet.title, country: finalCountry }));
         }
 
@@ -427,7 +435,7 @@
         // 1. Parallel Execution: Discovery (Search) & Saved Channel Check (Activities)
         const discoveryPromise = (async () => {
             try {
-                const res = await this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&eventType=live&regionCode=${region}&q=${encodeURIComponent(region === 'KR' ? '라이브|실시간' : 'live')}&order=viewCount&maxResults=50`, env);
+                const res = await this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&eventType=live&regionCode=${region}&q=${encodeURIComponent(region === 'KR' ? '라이브|실시간' : (region === 'JP' ? 'ライブ|生放送' : 'live'))}&order=viewCount&maxResults=50`, env);
                 const data = await res.json();
                 return data.items || [];
             } catch (e) {
@@ -476,13 +484,54 @@
             }
         }
 
+        // 5. Fetch Channel Details (for Country info)
+        let channelCountryMap = {};
+        if (finalLiveItems.length > 0) {
+            const channelIds = [...new Set(finalLiveItems.map(i => i.snippet.channelId))];
+            for (let i = 0; i < channelIds.length; i += 50) {
+                const batch = channelIds.slice(i, i + 50).join(',');
+                try {
+                    const cRes = await this.fetchWithFallback(`https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${batch}`, env);
+                    const cData = await cRes.json();
+                    if (cData.items) {
+                        cData.items.forEach(c => {
+                            if (c.snippet.country) channelCountryMap[c.id] = c.snippet.country;
+                        });
+                    }
+                } catch (e) { console.error("Channel details fetch failed", e); }
+            }
+        }
+
         // 6. Sort by Viewers & Save top 100
-        finalLiveItems = finalLiveItems.filter(item => item.liveStreamingDetails && (item.liveStreamingDetails.concurrentViewers || item.snippet.liveBroadcastContent === 'live'));
+        finalLiveItems = finalLiveItems.filter(item => {
+            if (!item.liveStreamingDetails || (!item.liveStreamingDetails.concurrentViewers && item.snippet.liveBroadcastContent !== 'live')) return false;
+
+            const title = item.snippet.title;
+            const channel = item.snippet.channelTitle;
+            const cid = item.snippet.channelId;
+            const country = channelCountryMap[cid] || '';
+            const text = (title + " " + channel).toLowerCase();
+
+            // Hybrid Filtering: Text Regex + Channel Country
+            if (region === 'KR') {
+                // Include if text has Korean OR explicit country is KR
+                return /[ㄱ-ㅎ|ㅏ-ㅣ|가-힣]/.test(text) || country === 'KR';
+            } else if (region === 'JP') {
+                // Include if text has Japanese OR explicit country is JP
+                return /[ぁ-んァ-ン一-龯]/.test(text) || country === 'JP';
+            } else {
+                // For other regions (US), relax country check to increase results.
+                // Only filter by SCRIPT (Text Regex).
+                // This allows channels from IN/RU/etc to show up if their titles are in English (global content).
+                if (/[ㄱ-ㅎ|ㅏ-ㅣ|가-힣]/.test(text) || /[ぁ-んァ-ン]/.test(text) || /[\u0900-\u097F]/.test(text) || /[\u0600-\u06FF]/.test(text)) return false;
+                return true;
+            }
+        });
         finalLiveItems.sort((a, b) => parseInt(b.liveStreamingDetails?.concurrentViewers || 0) - parseInt(a.liveStreamingDetails?.concurrentViewers || 0));
         const top100 = finalLiveItems.slice(0, 100);
 
-        await env.DB.prepare("DROP TABLE IF EXISTS LiveRankings").run();
-        await env.DB.prepare("CREATE TABLE LiveRankings (channel_name TEXT, video_title TEXT, viewers INTEGER, thumbnail TEXT, video_id TEXT, region TEXT, category TEXT)").run();
+        await env.DB.prepare("CREATE TABLE IF NOT EXISTS LiveRankings (channel_name TEXT, video_title TEXT, viewers INTEGER, thumbnail TEXT, video_id TEXT, region TEXT, category TEXT)").run();
+        await env.DB.prepare("DELETE FROM LiveRankings WHERE region = ?").bind(region).run();
 
         const stmts = top100.map(item => env.DB.prepare(`INSERT INTO LiveRankings (channel_name, video_title, viewers, thumbnail, video_id, region, category) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(
             item.snippet.channelTitle,
@@ -734,20 +783,7 @@ const HTML_CONTENT = `
                     <option value="KR" selected>🇰🇷 Korea</option><option value="US">🇺🇸 USA</option><option value="JP">🇯🇵 Japan</option>
                     <option value="IN">🇮🇳 India</option><option value="BR">🇧🇷 Brazil</option><option value="DE">🇩🇪 Germany</option><option value="FR">🇫🇷 France</option>
                 </select>
-                <button onclick="batchCollect()" id="batchBtn" class="bg-indigo-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg active:scale-95">TOP 300 수집</button>
-                <div class="flex gap-1">
-                    <button onclick="downloadCSV()" class="bg-emerald-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">CSV (CH)</button>
-                    <button onclick="downloadLiveCSV()" class="bg-emerald-800 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">CSV (LIVE)</button>
-                </div>
-                <div class="flex gap-1">
-                    <button onclick="downloadBackup()" class="bg-blue-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">BACKUP</button>
-                    <button onclick="document.getElementById('restoreInput').click()" class="bg-blue-800 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">RESTORE</button>
-                    <input type="file" id="restoreInput" accept=".csv" class="hidden" onchange="restoreBackup(this)">
-                </div>
-                <button onclick="syncLive()" id="liveSyncBtn" class="bg-red-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg active:scale-95">LIVE SYNC</button>
-                <button onclick="updateSystem()" id="syncBtn" class="bg-slate-900 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">CH SYNC</button>
-                <button onclick="openAddModal()" class="bg-violet-600 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg active:scale-95">ADD CHANNEL</button>
-                <button onclick="resetDB()" class="bg-red-800 text-white px-4 py-2.5 rounded-2xl text-[10px] font-black shadow-lg">DB RESET</button>
+                <button onclick="switchTab('admin')" id="btn-tab-admin" class="bg-slate-900 text-white px-5 py-2.5 rounded-2xl text-[10px] font-black shadow-lg hover:bg-slate-800 transition-colors">⚙️ ADMIN</button>
             </div>
         </div>
     </nav>
@@ -757,7 +793,7 @@ const HTML_CONTENT = `
             백그라운드 작업을 시작했습니다. 잠시 후 새로고침 하세요.
         </div>
 
-        <div class="flex gap-2 mb-8 bg-slate-100 p-1.5 rounded-[2rem] w-fit border border-slate-200 mx-auto shadow-inner">
+        <div id="tab-buttons-container" class="flex gap-2 mb-8 bg-slate-100 p-1.5 rounded-[2rem] w-fit border border-slate-200 mx-auto shadow-inner">
             <button onclick="switchTab('dashboard')" id="btn-tab-dashboard" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all tab-active">DASHBOARD</button>
             <button onclick="switchTab('ranking')" id="btn-tab-rank" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600">CHANNEL RANK</button>
             <button onclick="switchTab('trending')" id="btn-tab-trend" class="px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600">TRENDING</button>
@@ -771,6 +807,77 @@ const HTML_CONTENT = `
         </div>
 
 
+
+        <!-- ADMIN SECTION -->
+        <div id="section-admin" class="hidden">
+             <div class="bg-white rounded-[2.5rem] p-10 border border-slate-100 shadow-xl">
+                <h2 class="text-xl font-black text-slate-900 mb-8 flex items-center gap-2"><span class="text-2xl">⚙️</span> SYSTEM ADMINISTRATION</h2>
+                
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <!-- Column 1: Sync & Discovery -->
+                    <div class="bg-slate-50 p-6 rounded-[2rem] border border-slate-100">
+                        <h3 class="text-sm font-black text-slate-400 uppercase tracking-widest mb-4">DATA SYNC</h3>
+                        <div class="space-y-3">
+                            <button onclick="batchCollect()" id="batchBtn" class="w-full bg-indigo-600 text-white px-4 py-4 rounded-2xl text-xs font-black shadow-lg hover:scale-[1.02] active:scale-95 transition-all">
+                                📡 TOP 300 COLLECT
+                                <div class="text-[9px] font-normal opacity-70 mt-1">Collects top channels (High Cost)</div>
+                            </button>
+                            <button onclick="syncLive()" id="liveSyncBtn" class="w-full bg-red-600 text-white px-4 py-4 rounded-2xl text-xs font-black shadow-lg hover:scale-[1.02] active:scale-95 transition-all">
+                                🔴 LIVE SYNC
+                                <div class="text-[9px] font-normal opacity-70 mt-1">Updates live streams now</div>
+                            </button>
+                            <button onclick="updateSystem()" id="syncBtn" class="w-full bg-slate-900 text-white px-4 py-4 rounded-2xl text-xs font-black shadow-lg hover:scale-[1.02] active:scale-95 transition-all">
+                                🔄 CH SYNC
+                                <div class="text-[9px] font-normal opacity-70 mt-1">Updates stats & trends</div>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Column 2: Management -->
+                    <div class="bg-slate-50 p-6 rounded-[2rem] border border-slate-100">
+                        <h3 class="text-sm font-black text-slate-400 uppercase tracking-widest mb-4">MANAGEMENT</h3>
+                        <div class="space-y-3">
+                            <button onclick="openAddModal()" class="w-full bg-violet-600 text-white px-4 py-4 rounded-2xl text-xs font-black shadow-lg hover:scale-[1.02] active:scale-95 transition-all">
+                                📺 ADD CHANNEL
+                                <div class="text-[9px] font-normal opacity-70 mt-1">Manually register a channel</div>
+                            </button>
+                             <button onclick="openOverrideModal()" class="w-full bg-slate-700 text-white px-4 py-4 rounded-2xl text-xs font-black shadow-lg hover:scale-[1.02] active:scale-95 transition-all">
+                                🌏 FORCE COUNTRY
+                                <div class="text-[9px] font-normal opacity-70 mt-1">Override channel region</div>
+                            </button>
+                            <button onclick="resetDB()" class="w-full bg-red-800 text-white px-4 py-4 rounded-2xl text-xs font-black shadow-lg hover:scale-[1.02] active:scale-95 transition-all">
+                                ⚠️ DB RESET
+                                <div class="text-[9px] font-normal opacity-70 mt-1">Wipes all data</div>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Column 3: Backup & Export -->
+                    <div class="bg-slate-50 p-6 rounded-[2rem] border border-slate-100">
+                        <h3 class="text-sm font-black text-slate-400 uppercase tracking-widest mb-4">BACKUP & EXPORT</h3>
+                        <div class="space-y-3">
+                             <div class="flex gap-2">
+                                <button onclick="downloadCSV()" class="flex-1 bg-emerald-600 text-white px-4 py-4 rounded-2xl text-xs font-black shadow-lg hover:scale-[1.02] active:scale-95 transition-all">
+                                    📄 CSV (CH)
+                                </button>
+                                <button onclick="downloadLiveCSV()" class="flex-1 bg-emerald-800 text-white px-4 py-4 rounded-2xl text-xs font-black shadow-lg hover:scale-[1.02] active:scale-95 transition-all">
+                                    📄 CSV (LIVE)
+                                </button>
+                            </div>
+                            <button onclick="downloadBackup()" class="w-full bg-blue-600 text-white px-4 py-4 rounded-2xl text-xs font-black shadow-lg hover:scale-[1.02] active:scale-95 transition-all">
+                                💾 BACKUP EXPORT
+                                <div class="text-[9px] font-normal opacity-70 mt-1">Full database dump</div>
+                            </button>
+                            <button onclick="document.getElementById('restoreInput').click()" class="w-full bg-blue-800 text-white px-4 py-4 rounded-2xl text-xs font-black shadow-lg hover:scale-[1.02] active:scale-95 transition-all">
+                                ♻️ RESTORE BACKUP
+                                <div class="text-[9px] font-normal opacity-70 mt-1">Import from CSV</div>
+                            </button>
+                             <input type="file" id="restoreInput" accept=".csv" class="hidden" onchange="restoreBackup(this)">
+                        </div>
+                    </div>
+                </div>
+             </div>
+        </div>
 
         <div id="section-dashboard" class="block">
             <div class="flex flex-col gap-10">
@@ -879,6 +986,10 @@ const HTML_CONTENT = `
                         <option value="IN">🇮🇳 India</option><option value="BR">🇧🇷 Brazil</option><option value="DE">🇩🇪 Germany</option><option value="FR">🇫🇷 France</option>
                     </select>
                 </div>
+                <div class="flex items-center gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-200">
+                    <input type="checkbox" id="trackLiveCheck" class="w-5 h-5 accent-red-600 rounded">
+                    <label for="trackLiveCheck" class="text-xs font-bold text-slate-600 cursor-pointer select-none">🔔 Also Track Live Status (실시간 방송 알림 추적)</label>
+                </div>
                 <button onclick="addNewChannel()" class="w-full py-4 bg-slate-900 text-white rounded-2xl font-black hover:bg-violet-600 transition-all shadow-lg mt-2">REGISTER CHANNEL</button>
             </div>
         </div>
@@ -917,24 +1028,42 @@ const HTML_CONTENT = `
                if(btn) btn.className = 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all text-slate-400 hover:text-slate-600';
             });
             
+            // Handle ADMIN button highlight
+            const adminBtn = document.getElementById('btn-tab-admin');
+            if(t === 'admin') {
+                adminBtn.className = 'bg-slate-900 text-white px-5 py-2.5 rounded-2xl text-[10px] font-black shadow-inner ring-2 ring-red-500';
+            } else {
+                adminBtn.className = 'bg-slate-900 text-white px-5 py-2.5 rounded-2xl text-[10px] font-black shadow-lg hover:bg-slate-800 transition-colors';
+            }
+
             const activeId = t === 'dashboard' ? 'btn-tab-dashboard' : (t === 'ranking' ? 'btn-tab-rank' : (t === 'live' ? 'btn-tab-live' : (t === 'viral' ? 'btn-tab-viral' : (t === 'shorts' ? 'btn-tab-shorts' : 'btn-tab-trend'))));
-            if(document.getElementById(activeId)) {
+            if(document.getElementById(activeId) && t !== 'admin') {
                 if(t === 'viral') document.getElementById(activeId).className = 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all bg-purple-600 text-white shadow-lg';
                 else if(t === 'shorts') document.getElementById(activeId).className = 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all bg-red-600 text-white shadow-lg';
                 else if(t === 'dashboard') document.getElementById(activeId).className = 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all tab-active';
                 else document.getElementById(activeId).className = 'px-8 py-3 rounded-[1.5rem] text-sm font-black transition-all tab-active';
             }
             
-            ['section-dashboard', 'section-ranking', 'section-live', 'section-trending'].forEach(id => document.getElementById(id).style.display = 'none');
+            ['section-dashboard', 'section-ranking', 'section-live', 'section-trending', 'section-admin'].forEach(id => {
+                const el = document.getElementById(id);
+                if(el) el.style.display = 'none';
+            });
             
             if (t === 'viral' || t === 'shorts') {
                 document.getElementById('section-trending').style.display = 'block'; // Reuse trending grid
+            } else if (t === 'admin') {
+                 document.getElementById('section-admin').style.display = 'block';
             } else {
                 document.getElementById('section-' + t).style.display = 'block';
             }
             
-            document.getElementById('cat-list').style.display = (t === 'dashboard') ? 'none' : 'flex';
-            loadData();
+            // Hide Tabs container and Category list in Admin mode
+            // Note: I added id="tab-buttons-container" to the tab container in the HTML update
+            const tabContainer = document.getElementById('tab-buttons-container');
+            if(tabContainer) tabContainer.style.display = (t === 'admin') ? 'none' : 'flex';
+            document.getElementById('cat-list').style.display = (t === 'dashboard' || t === 'admin') ? 'none' : 'flex';
+            
+            if (t !== 'admin') loadData();
         }
 
         async function loadData() {
@@ -1056,10 +1185,11 @@ const HTML_CONTENT = `
             const countryInput = document.getElementById('newChannelCountry');
             const id = idInput.value.trim(); 
             const country = countryInput.value;
+            const trackLive = document.getElementById('trackLiveCheck').checked;
 
             if (!id) return alert("ID 입력 필요"); 
             
-            const res = await fetch(\`/api/add-channel?id=\${encodeURIComponent(id)}&customCountry=\${country}\`); 
+            const res = await fetch(\`/api/add-channel?id=\${encodeURIComponent(id)}&customCountry=\${country}&trackLive=\${trackLive}\`); 
             const data = await res.json(); 
             
             if (data.success) { 
