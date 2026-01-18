@@ -250,6 +250,24 @@
             return new Response(JSON.stringify(results || []), { headers: { "Content-Type": "application/json" } });
         }
 
+        // 9. ADMIN STATS
+        if (url.pathname === "/api/admin/stats") {
+            const { results: general } = await env.DB.prepare("SELECT country, COUNT(*) as count FROM Channels GROUP BY country").all();
+            const { results: live } = await env.DB.prepare("SELECT region as country, COUNT(*) as count FROM LiveStreamers GROUP BY region").all();
+
+            const stats = {};
+            general.forEach(r => {
+                if (!stats[r.country]) stats[r.country] = { general: 0, live: 0 };
+                stats[r.country].general = r.count;
+            });
+            live.forEach(r => {
+                if (!stats[r.country]) stats[r.country] = { general: 0, live: 0 };
+                stats[r.country].live = r.count;
+            });
+
+            return new Response(JSON.stringify(stats), { headers: { "Content-Type": "application/json" } });
+        }
+
         // 9. FULL BACKUP IMPORT (Restore)
         if (url.pathname === "/api/backup-import" && request.method === "POST") {
             try {
@@ -883,6 +901,21 @@ const HTML_CONTENT = `
                              <input type="file" id="restoreInput" accept=".csv" class="hidden" onchange="restoreBackup(this)">
                         </div>
                     </div>
+
+                    <!-- Column 4: DB Statistics (Full Width or Row 2) -->
+                     <div class="bg-slate-50 p-6 rounded-[2rem] border border-slate-100 md:col-span-3 lg:col-span-1">
+                        <h3 class="text-sm font-black text-slate-400 uppercase tracking-widest mb-4">📊 DB STATISTICS</h3>
+                        <div class="overflow-hidden rounded-2xl border border-slate-200">
+                             <table class="w-full text-left text-xs">
+                                <thead class="bg-slate-100 font-bold text-slate-500">
+                                    <tr><th class="p-3">Region</th><th class="p-3 text-right">General</th><th class="p-3 text-right">Live</th></tr>
+                                </thead>
+                                <tbody id="admin-stats-body" class="bg-white divide-y divide-slate-100">
+                                    <tr><td colspan="3" class="p-4 text-center text-slate-400">Loading...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                 </div>
              </div>
         </div>
@@ -1071,7 +1104,44 @@ const HTML_CONTENT = `
             if(tabContainer) tabContainer.style.display = (t === 'admin') ? 'none' : 'flex';
             document.getElementById('cat-list').style.display = (t === 'dashboard' || t === 'admin') ? 'none' : 'flex';
             
-            if (t !== 'admin') loadData();
+            if (t === 'admin') {
+                fetchAdminStats();
+            } else {
+                loadData();
+            }
+        }
+
+        async function fetchAdminStats() {
+            try {
+                const res = await fetch('/api/admin/stats');
+                const stats = await res.json();
+                const tbody = document.getElementById('admin-stats-body');
+                
+                if (Object.keys(stats).length === 0) {
+                     tbody.innerHTML = '<tr><td colspan="3" class="p-4 text-center text-slate-400">No Data</td></tr>';
+                     return;
+                }
+
+                const sortedKeys = Object.keys(stats).sort((a,b) => (stats[b].general||0) - (stats[a].general||0));
+
+                tbody.innerHTML = sortedKeys.map(k => {
+                    const flagMap = { 'KR': '🇰🇷', 'US': '🇺🇸', 'JP': '🇯🇵', 'IN': '🇮🇳', 'BR': '🇧🇷', 'DE': '🇩🇪', 'FR': '🇫🇷', 'RU': '🇷🇺', 'GB': '🇬🇧' };
+                    const flag = flagMap[k] || '🌐';
+                    const generalCount = stats[k].general || 0;
+                    const liveCount = stats[k].live || 0;
+                    return [
+                        '<tr>',
+                        '<td class="p-3 font-bold text-slate-700">' + flag + ' ' + k + '</td>',
+                        '<td class="p-3 text-right font-mono text-slate-600">' + generalCount.toLocaleString() + '</td>',
+                        '<td class="p-3 text-right font-mono text-emerald-600 font-bold">' + liveCount.toLocaleString() + '</td>',
+                        '</tr>'
+                    ].join('');
+                }).join('');
+
+            } catch(e) {
+                console.error("Stats Error", e);
+                document.getElementById('admin-stats-body').innerHTML = '<tr><td colspan="3" class="p-4 text-center text-red-400">Error Loading Stats</td></tr>';
+            }
         }
 
         async function loadData() {
